@@ -206,13 +206,16 @@ export default function Home() {
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
   const [newCategoryName, setNewCategoryName] = useState("");
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [compareIds, setCompareIds] = useState<Set<string>>(new Set());
+  const [compareIds, setCompareIds] = useState<string[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>("single");
   const [search, setSearch] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
   const [ready, setReady] = useState(false);
   const [draggingFiles, setDraggingFiles] = useState(false);
+  const [draggingImageId, setDraggingImageId] = useState<string | null>(null);
+  const [dragOverCategoryId, setDragOverCategoryId] = useState<string | null>(null);
+  const [dragOverCompareId, setDragOverCompareId] = useState<string | null>(null);
   const [storageText, setStorageText] = useState("本機儲存");
   const [toast, setToast] = useState("");
   const [offlineState, setOfflineState] = useState<OfflineState>(() => localStorage.getItem(OFFLINE_DISABLED_KEY) === "1" ? "disabled" : navigator.onLine ? "preparing" : "offline");
@@ -280,7 +283,9 @@ export default function Home() {
     if (!query) return images;
     return images.filter((image) => `${image.name} ${image.note}`.toLocaleLowerCase().includes(query));
   }, [images, search]);
-  const comparedImages = images.filter((image) => compareIds.has(image.id));
+  const comparedImages = compareIds
+    .map((id) => images.find((image) => image.id === id))
+    .filter((image): image is LibraryImage => Boolean(image));
   const libraryGroups = useMemo(() => [
     ...categories.map((category) => ({ id: category.id, name: category.name, removable: true, images: filteredImages.filter((image) => image.categoryId === category.id) })),
     { id: "uncategorized", name: "未分類", removable: false, images: filteredImages.filter((image) => !image.categoryId || !categories.some((category) => category.id === image.categoryId)) },
@@ -298,7 +303,7 @@ export default function Home() {
     setStorageText(`已使用 ${used} MB`);
   }
 
-  async function importFiles(fileList: FileList | File[]) {
+  async function importFiles(fileList: FileList | File[], categoryId: string | null = null) {
     const files = Array.from(fileList).filter((file) => file.type.startsWith("image/"));
     if (!files.length) return showToast("請選擇 JPG、PNG 或 WEBP 圖片。" );
     const added: LibraryImage[] = [];
@@ -312,7 +317,7 @@ export default function Home() {
           createdAt: Date.now(),
           updatedAt: Date.now(),
           transform: { ...DEFAULT_TRANSFORM },
-          categoryId: null,
+          categoryId,
         };
         await saveImage(stored);
         const url = URL.createObjectURL(file);
@@ -328,8 +333,8 @@ export default function Home() {
     setImages((current) => [...added, ...current]);
     setActiveId(added[0].id);
     setCompareIds((current) => {
-      const next = new Set(current);
-      added.forEach((image) => { if (next.size < MAX_COMPARE) next.add(image.id); });
+      const next = [...current];
+      added.forEach((image) => { if (next.length < MAX_COMPARE && !next.includes(image.id)) next.push(image.id); });
       return next;
     });
     showToast(`已加入 ${added.length} 張背景，並儲存在本機圖庫。`);
@@ -358,7 +363,7 @@ export default function Home() {
     }
     URL.revokeObjectURL(image.url);
     setImages((current) => current.filter((item) => item.id !== image.id));
-    setCompareIds((current) => { const next = new Set(current); next.delete(image.id); return next; });
+    setCompareIds((current) => current.filter((id) => id !== image.id));
     if (activeId === image.id) setActiveId(images.find((item) => item.id !== image.id)?.id ?? null);
     showToast("已從圖庫刪除。" );
     refreshStorage();
@@ -395,7 +400,7 @@ export default function Home() {
     const remaining = images.filter((image) => !removedIds.has(image.id));
     setImages(remaining);
     setCategories((current) => current.filter((item) => item.id !== category.id));
-    setCompareIds((current) => new Set([...current].filter((id) => !removedIds.has(id))));
+    setCompareIds((current) => current.filter((id) => !removedIds.has(id)));
     setCollapsedCategories((current) => { const next = new Set(current); next.delete(category.id); return next; });
     if (activeId && removedIds.has(activeId)) setActiveId(remaining[0]?.id ?? null);
     showToast(`已刪除分類與 ${categoryImages.length} 張圖片。`);
@@ -413,7 +418,7 @@ export default function Home() {
     images.forEach((image) => URL.revokeObjectURL(image.url));
     setImages([]);
     setCategories([]);
-    setCompareIds(new Set());
+    setCompareIds([]);
     setCollapsedCategories(new Set());
     setActiveId(null);
     showToast("本機圖庫已清空。");
@@ -431,12 +436,92 @@ export default function Home() {
 
   function toggleCompare(id: string) {
     setCompareIds((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else if (next.size < MAX_COMPARE) next.add(id);
+      if (current.includes(id)) return current.filter((item) => item !== id);
+      if (current.length < MAX_COMPARE) return [...current, id];
       else showToast(`一次最多比較 ${MAX_COMPARE} 張，請先取消一張。`);
-      return next;
+      return current;
     });
+  }
+
+  function startImageDrag(event: React.DragEvent, imageId: string) {
+    setDraggingImageId(imageId);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("application/x-stage-image", imageId);
+    event.dataTransfer.setData("text/plain", imageId);
+  }
+
+  function finishImageDrag() {
+    setDraggingImageId(null);
+    setDragOverCategoryId(null);
+    setDragOverCompareId(null);
+  }
+
+  function droppedImageId(event: React.DragEvent) {
+    return event.dataTransfer.getData("application/x-stage-image") || draggingImageId;
+  }
+
+  function handleCategoryDragOver(event: React.DragEvent, groupId: string) {
+    const hasFiles = event.dataTransfer.types.includes("Files");
+    const hasImage = event.dataTransfer.types.includes("application/x-stage-image") || Boolean(draggingImageId);
+    if (!hasFiles && !hasImage) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = hasFiles ? "copy" : "move";
+    setDragOverCategoryId(groupId);
+  }
+
+  async function handleCategoryDrop(event: React.DragEvent, groupId: string) {
+    event.preventDefault();
+    event.stopPropagation();
+    const categoryId = groupId === "uncategorized" ? null : groupId;
+    setDragOverCategoryId(null);
+    setDraggingFiles(false);
+    if (event.dataTransfer.files.length) {
+      await importFiles(event.dataTransfer.files, categoryId);
+      if (groupId !== "uncategorized") setCollapsedCategories((current) => { const next = new Set(current); next.delete(groupId); return next; });
+      return;
+    }
+    const imageId = droppedImageId(event);
+    const image = images.find((item) => item.id === imageId);
+    if (!image || image.categoryId === categoryId) return finishImageDrag();
+    patchImage(image.id, { categoryId });
+    if (groupId !== "uncategorized") setCollapsedCategories((current) => { const next = new Set(current); next.delete(groupId); return next; });
+    showToast(`已將「${image.name}」移到${categoryId ? `「${categories.find((category) => category.id === categoryId)?.name ?? "分類"}」` : "「未分類」"}。`);
+    finishImageDrag();
+  }
+
+  function handleCompareDrop(event: React.DragEvent, targetId: string) {
+    event.preventDefault();
+    event.stopPropagation();
+    const sourceId = droppedImageId(event);
+    setDragOverCompareId(null);
+    if (!sourceId || sourceId === targetId) return finishImageDrag();
+    setCompareIds((current) => {
+      const sourceIndex = current.indexOf(sourceId);
+      const targetIndex = current.indexOf(targetId);
+      if (targetIndex < 0) return current;
+      if (sourceIndex >= 0) {
+        const next = [...current];
+        [next[sourceIndex], next[targetIndex]] = [next[targetIndex], next[sourceIndex]];
+        return next;
+      }
+      return current.map((id) => id === targetId ? sourceId : id);
+    });
+    setActiveId(sourceId);
+    showToast(compareIds.includes(sourceId) ? "已調整比較順序。" : "已更換比較圖片。");
+    finishImageDrag();
+  }
+
+  function handleCompareAreaDrop(event: React.DragEvent) {
+    if (event.defaultPrevented) return;
+    const sourceId = droppedImageId(event);
+    if (!sourceId) return;
+    event.preventDefault();
+    if (compareIds.includes(sourceId)) return finishImageDrag();
+    if (compareIds.length >= MAX_COMPARE) return showToast(`一次最多比較 ${MAX_COMPARE} 張，請拖到既有卡片上更換。`);
+    setCompareIds((current) => [...current, sourceId]);
+    showToast("已加入並排比較。");
+    finishImageDrag();
   }
 
   function commitRename(image: LibraryImage) {
@@ -522,10 +607,10 @@ export default function Home() {
   return (
     <main
       className={`app-shell ${draggingFiles ? "is-file-dragging" : ""}`}
-      onDragEnter={(event) => { event.preventDefault(); setDraggingFiles(true); }}
-      onDragOver={(event) => event.preventDefault()}
+      onDragEnter={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDraggingFiles(true); } }}
+      onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
       onDragLeave={(event) => { if (event.currentTarget === event.target) setDraggingFiles(false); }}
-      onDrop={(event) => { event.preventDefault(); setDraggingFiles(false); void importFiles(event.dataTransfer.files); }}
+      onDrop={(event) => { if (!event.dataTransfer.files.length) return; event.preventDefault(); setDraggingFiles(false); void importFiles(event.dataTransfer.files); }}
     >
       <header className="topbar">
         <div className="brand-mark">劇</div>
@@ -583,7 +668,14 @@ export default function Home() {
                 ? !image.categoryId || !categories.some((category) => category.id === image.categoryId)
                 : image.categoryId === group.id).length;
               return (
-                <section className="library-group" key={group.id}>
+                <section
+                  className={`library-group ${dragOverCategoryId === group.id ? "drop-target" : ""}`}
+                  key={group.id}
+                  onDragEnter={(event) => handleCategoryDragOver(event, group.id)}
+                  onDragOver={(event) => handleCategoryDragOver(event, group.id)}
+                  onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragOverCategoryId(null); }}
+                  onDrop={(event) => void handleCategoryDrop(event, group.id)}
+                >
                   <div className="category-heading">
                     <button className="category-toggle" onClick={() => toggleCategory(group.id)} aria-expanded={!collapsed}>
                       <span>{collapsed ? "▸" : "▾"}</span><strong>{group.name}</strong><small>{totalCount}</small>
@@ -599,7 +691,14 @@ export default function Home() {
                     <div className="category-items">
                       {!group.images.length && <div className="empty-category">{search ? "此分類沒有符合搜尋的圖片" : "尚無圖片"}</div>}
                       {group.images.map((image) => (
-                        <article key={image.id} className={`library-item ${activeImage?.id === image.id ? "active" : ""}`} onClick={() => setActiveId(image.id)}>
+                        <article
+                          key={image.id}
+                          draggable
+                          className={`library-item ${activeImage?.id === image.id ? "active" : ""} ${draggingImageId === image.id ? "is-dragging" : ""}`}
+                          onClick={() => setActiveId(image.id)}
+                          onDragStart={(event) => startImageDrag(event, image.id)}
+                          onDragEnd={finishImageDrag}
+                        >
                           <div className="thumb"><img src={image.url} alt="" /><img src={STAGE_OVERLAY_URL} alt="" /></div>
                           <div className="item-copy">
                             {editingId === image.id ? (
@@ -616,7 +715,7 @@ export default function Home() {
                             <small>{image.note || "尚未加入備註"}</small>
                           </div>
                           <label className="compare-check" title="加入比較" onClick={(e) => e.stopPropagation()}>
-                            <input type="checkbox" checked={compareIds.has(image.id)} onChange={() => toggleCompare(image.id)} /><span>比較</span>
+                            <input type="checkbox" checked={compareIds.includes(image.id)} onChange={() => toggleCompare(image.id)} /><span>比較</span>
                           </label>
                           <div className="item-actions">
                             <button title="重新命名" onClick={(e) => { e.stopPropagation(); setEditingId(image.id); setEditingName(image.name); }}>✎</button>
@@ -638,7 +737,8 @@ export default function Home() {
             <div><p className="eyebrow">PREVIEW</p><h2>{viewMode === "single" ? "舞台預覽" : `比較背景（${comparedImages.length}/${MAX_COMPARE}）`}</h2></div>
             <div className="view-tabs">
               <button className={viewMode === "single" ? "active" : ""} onClick={() => setViewMode("single")}>單張調整</button>
-              <button className={viewMode === "compare" ? "active" : ""} onClick={() => setViewMode("compare")}>並排比較 <b>{compareIds.size || ""}</b></button>
+              <button className={viewMode === "compare" ? "active" : ""} onClick={() => setViewMode("compare")}>並排比較 <b>{compareIds.length || ""}</b></button>
+              {viewMode === "compare" && <button className="clear-compare" disabled={!compareIds.length} onClick={() => { setCompareIds([]); showToast("已清空比較選擇。"); }}>清空重選</button>}
             </div>
           </div>
 
@@ -677,18 +777,37 @@ export default function Home() {
               )}
             </div>
           ) : (
-            <div className="compare-wrap">
+            <div
+              className="compare-wrap"
+              onDragOver={(event) => { if (draggingImageId || event.dataTransfer.types.includes("application/x-stage-image")) event.preventDefault(); }}
+              onDrop={handleCompareAreaDrop}
+            >
               {comparedImages.length ? (
                 <div className={`compare-grid count-${comparedImages.length}`}>
                   {comparedImages.map((image, index) => (
-                    <article key={image.id} className={`compare-card ${activeImage?.id === image.id ? "active" : ""}`}>
+                    <article
+                      key={image.id}
+                      draggable
+                      className={`compare-card ${activeImage?.id === image.id ? "active" : ""} ${dragOverCompareId === image.id ? "drop-target" : ""} ${draggingImageId === image.id ? "is-dragging" : ""}`}
+                      onDragStart={(event) => startImageDrag(event, image.id)}
+                      onDragEnd={finishImageDrag}
+                      onDragOver={(event) => {
+                        if (!draggingImageId && !event.dataTransfer.types.includes("application/x-stage-image")) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        event.dataTransfer.dropEffect = "move";
+                        setDragOverCompareId(image.id);
+                      }}
+                      onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragOverCompareId(null); }}
+                      onDrop={(event) => handleCompareDrop(event, image.id)}
+                    >
                       <StageCanvas image={image} label={String.fromCharCode(65 + index)} onActivate={() => setActiveId(image.id)} />
                       <div className="compare-meta"><div><strong>{image.name}</strong><small>{image.note || "無備註"}</small></div><button onClick={() => { setActiveId(image.id); setViewMode("single"); }}>調整</button></div>
                     </article>
                   ))}
                 </div>
               ) : (
-                <div className="compare-empty"><span>▦</span><h3>尚未選擇比較圖片</h3><p>在左側圖庫勾選「比較」，最多可同時查看四張。</p></div>
+                <div className="compare-empty"><span>▦</span><h3>尚未選擇比較圖片</h3><p>勾選「比較」，或直接把左側圖片拖到這裡，最多四張。</p></div>
               )}
             </div>
           )}
