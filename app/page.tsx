@@ -2,8 +2,9 @@
 
 import { PointerEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { registerSW } from "virtual:pwa-register";
+import Stage3D from "./Stage3D";
 
-type ViewMode = "single" | "compare";
+type ViewMode = "single" | "compare" | "threeD";
 type FitMode = "cover" | "contain";
 type Transform = { scale: number; x: number; y: number; brightness: number; fit: FitMode };
 type StoredImage = {
@@ -870,10 +871,11 @@ export default function Home() {
 
         <section className="stage-panel">
           <div className="stage-toolbar">
-            <div><p className="eyebrow">PREVIEW</p><h2>{viewMode === "single" ? "舞台預覽" : `比較背景（${comparedImages.length}/${MAX_COMPARE}）`}</h2></div>
+            <div><p className="eyebrow">PREVIEW</p><h2>{viewMode === "single" ? "舞台預覽" : viewMode === "compare" ? `比較背景（${comparedImages.length}/${MAX_COMPARE}）` : "3D 舞台預覽"}</h2></div>
             <div className="view-tabs">
               <button className={viewMode === "single" ? "active" : ""} onClick={() => setViewMode("single")}>單張調整</button>
               <button className={viewMode === "compare" ? "active" : ""} onClick={() => setViewMode("compare")}>並排比較 <b>{compareIds.length || ""}</b></button>
+              <button className={viewMode === "threeD" ? "active" : ""} onClick={() => setViewMode("threeD")}>3D 舞台</button>
               {viewMode === "compare" && <button className="clear-compare" disabled={!compareIds.length} onClick={() => { setCompareIds([]); showToast("已清空比較選擇。"); }}>清空重選</button>}
               {viewMode === "compare" && <button className="export-compare" disabled={!comparedImages.length} onClick={() => void exportComparison()}>↓ 匯出比較圖</button>}
             </div>
@@ -918,7 +920,7 @@ export default function Home() {
                 </div>
               )}
             </div>
-          ) : (
+          ) : viewMode === "compare" ? (
             <div
               className="compare-wrap"
               onDragOver={(event) => { if (draggingImageId || event.dataTransfer.types.includes("application/x-stage-image")) event.preventDefault(); }}
@@ -958,6 +960,8 @@ export default function Home() {
                 <div className="compare-empty"><span>▦</span><h3>尚未選擇比較圖片</h3><p>勾選「比較」，或直接把左側圖片拖到這裡，最多四張。</p></div>
               )}
             </div>
+          ) : (
+            <Stage3D image={activeImage} />
           )}
         </section>
       </section>
