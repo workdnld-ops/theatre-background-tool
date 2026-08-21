@@ -14,9 +14,11 @@ type StoredImage = {
   createdAt: number;
   updatedAt: number;
   transform: Transform;
+  categoryId: string | null;
 };
 type LibraryImage = StoredImage & { url: string };
-type OfflineState = "preparing" | "ready" | "offline";
+type Category = { id: string; name: string; createdAt: number };
+type OfflineState = "preparing" | "ready" | "offline" | "disabled";
 interface InstallPromptEvent extends Event {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
@@ -24,16 +26,21 @@ interface InstallPromptEvent extends Event {
 
 const DB_NAME = "stage-view-library";
 const STORE_NAME = "backgrounds";
+const CATEGORY_STORE_NAME = "categories";
+const OFFLINE_DISABLED_KEY = "stage-view-offline-disabled";
 const DEFAULT_TRANSFORM: Transform = { scale: 100, x: 0, y: 0, brightness: 100, fit: "cover" };
 const MAX_COMPARE = 4;
 const STAGE_OVERLAY_URL = `${import.meta.env.BASE_URL}stage-overlay.png`;
 
 function openLibrary() {
   return new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
+    const request = indexedDB.open(DB_NAME, 2);
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(STORE_NAME)) {
         request.result.createObjectStore(STORE_NAME, { keyPath: "id" });
+      }
+      if (!request.result.objectStoreNames.contains(CATEGORY_STORE_NAME)) {
+        request.result.createObjectStore(CATEGORY_STORE_NAME, { keyPath: "id" });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -59,12 +66,58 @@ async function saveImage(image: StoredImage) {
   });
 }
 
+async function readCategories(): Promise<Category[]> {
+  const db = await openLibrary();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(CATEGORY_STORE_NAME, "readonly").objectStore(CATEGORY_STORE_NAME).getAll();
+    request.onsuccess = () => resolve(request.result as Category[]);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function saveCategory(category: Category) {
+  const db = await openLibrary();
+  return new Promise<void>((resolve, reject) => {
+    const request = db.transaction(CATEGORY_STORE_NAME, "readwrite").objectStore(CATEGORY_STORE_NAME).put(category);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
 async function removeImage(id: string) {
   const db = await openLibrary();
   return new Promise<void>((resolve, reject) => {
     const request = db.transaction(STORE_NAME, "readwrite").objectStore(STORE_NAME).delete(id);
     request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
+  });
+}
+
+async function clearStoredLibrary() {
+  const db = await openLibrary();
+  return new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction([STORE_NAME, CATEGORY_STORE_NAME], "readwrite");
+    transaction.objectStore(STORE_NAME).clear();
+    transaction.objectStore(CATEGORY_STORE_NAME).clear();
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+async function removeCategoryAndImages(categoryId: string) {
+  const db = await openLibrary();
+  return new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction([STORE_NAME, CATEGORY_STORE_NAME], "readwrite");
+    const imageStore = transaction.objectStore(STORE_NAME);
+    const request = imageStore.getAll();
+    request.onsuccess = () => {
+      (request.result as StoredImage[])
+        .filter((image) => image.categoryId === categoryId)
+        .forEach((image) => imageStore.delete(image.id));
+      transaction.objectStore(CATEGORY_STORE_NAME).delete(categoryId);
+    };
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
   });
 }
 
@@ -149,6 +202,9 @@ function StageCanvas({
 
 export default function Home() {
   const [images, setImages] = useState<LibraryImage[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
+  const [newCategoryName, setNewCategoryName] = useState("");
   const [activeId, setActiveId] = useState<string | null>(null);
   const [compareIds, setCompareIds] = useState<Set<string>>(new Set());
   const [viewMode, setViewMode] = useState<ViewMode>("single");
@@ -159,22 +215,23 @@ export default function Home() {
   const [draggingFiles, setDraggingFiles] = useState(false);
   const [storageText, setStorageText] = useState("本機儲存");
   const [toast, setToast] = useState("");
-  const [offlineState, setOfflineState] = useState<OfflineState>(() => navigator.onLine ? "preparing" : "offline");
+  const [offlineState, setOfflineState] = useState<OfflineState>(() => localStorage.getItem(OFFLINE_DISABLED_KEY) === "1" ? "disabled" : navigator.onLine ? "preparing" : "offline");
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const urlsRef = useRef<string[]>([]);
 
   useEffect(() => {
-    readLibrary()
-      .then((records) => {
+    Promise.all([readLibrary(), readCategories()])
+      .then(([records, storedCategories]) => {
         const restored = records
           .sort((a, b) => b.updatedAt - a.updatedAt)
           .map((record) => {
             const url = URL.createObjectURL(record.blob);
             urlsRef.current.push(url);
-            return { ...record, note: record.note ?? "", transform: { ...DEFAULT_TRANSFORM, ...record.transform }, url };
+            return { ...record, note: record.note ?? "", categoryId: record.categoryId ?? null, transform: { ...DEFAULT_TRANSFORM, ...record.transform }, url };
           });
         setImages(restored);
+        setCategories(storedCategories.sort((a, b) => a.createdAt - b.createdAt));
         setActiveId(restored[0]?.id ?? null);
       })
       .catch(() => showToast("無法開啟本機圖庫，請確認瀏覽器不是私密模式。"))
@@ -184,8 +241,9 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const handleOnline = () => setOfflineState("ready");
-    const handleOffline = () => setOfflineState("offline");
+    const offlineDisabled = localStorage.getItem(OFFLINE_DISABLED_KEY) === "1";
+    const handleOnline = () => setOfflineState(localStorage.getItem(OFFLINE_DISABLED_KEY) === "1" ? "disabled" : "ready");
+    const handleOffline = () => setOfflineState(localStorage.getItem(OFFLINE_DISABLED_KEY) === "1" ? "disabled" : "offline");
     const handleInstallPrompt = (event: Event) => {
       event.preventDefault();
       setInstallPrompt(event as InstallPromptEvent);
@@ -195,16 +253,18 @@ export default function Home() {
     window.addEventListener("offline", handleOffline);
     window.addEventListener("beforeinstallprompt", handleInstallPrompt);
 
-    registerSW({
-      immediate: true,
-      onOfflineReady: () => setOfflineState(navigator.onLine ? "ready" : "offline"),
-      onRegisterError: () => showToast("離線功能暫時無法啟用，請重新整理後再試。"),
-    });
-
-    if ("serviceWorker" in navigator) {
-      void navigator.serviceWorker.ready.then(() => {
-        setOfflineState(navigator.onLine ? "ready" : "offline");
+    if (!offlineDisabled) {
+      registerSW({
+        immediate: true,
+        onOfflineReady: () => setOfflineState(navigator.onLine ? "ready" : "offline"),
+        onRegisterError: () => showToast("離線功能暫時無法啟用，請重新整理後再試。"),
       });
+
+      if ("serviceWorker" in navigator) {
+        void navigator.serviceWorker.ready.then(() => {
+          setOfflineState(navigator.onLine ? "ready" : "offline");
+        });
+      }
     }
 
     return () => {
@@ -221,6 +281,10 @@ export default function Home() {
     return images.filter((image) => `${image.name} ${image.note}`.toLocaleLowerCase().includes(query));
   }, [images, search]);
   const comparedImages = images.filter((image) => compareIds.has(image.id));
+  const libraryGroups = useMemo(() => [
+    ...categories.map((category) => ({ id: category.id, name: category.name, removable: true, images: filteredImages.filter((image) => image.categoryId === category.id) })),
+    { id: "uncategorized", name: "未分類", removable: false, images: filteredImages.filter((image) => !image.categoryId || !categories.some((category) => category.id === image.categoryId)) },
+  ], [categories, filteredImages]);
 
   function showToast(message: string) {
     setToast(message);
@@ -248,6 +312,7 @@ export default function Home() {
           createdAt: Date.now(),
           updatedAt: Date.now(),
           transform: { ...DEFAULT_TRANSFORM },
+          categoryId: null,
         };
         await saveImage(stored);
         const url = URL.createObjectURL(file);
@@ -297,6 +362,71 @@ export default function Home() {
     if (activeId === image.id) setActiveId(images.find((item) => item.id !== image.id)?.id ?? null);
     showToast("已從圖庫刪除。" );
     refreshStorage();
+  }
+
+  async function createCategory() {
+    const name = newCategoryName.trim();
+    if (!name) return;
+    if (categories.some((category) => category.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+      return showToast("已經有相同名稱的分類。");
+    }
+    const category: Category = { id: crypto.randomUUID(), name, createdAt: Date.now() };
+    try {
+      await saveCategory(category);
+      setCategories((current) => [...current, category]);
+      setNewCategoryName("");
+      showToast(`已新增「${name}」分類。`);
+    } catch {
+      showToast("分類無法儲存，請稍後再試。");
+    }
+  }
+
+  async function deleteCategory(category: Category) {
+    const categoryImages = images.filter((image) => image.categoryId === category.id);
+    const detail = categoryImages.length ? `，並永久刪除裡面的 ${categoryImages.length} 張圖片` : "";
+    if (!window.confirm(`要刪除「${category.name}」分類${detail}嗎？此動作無法復原。`)) return;
+    try {
+      await removeCategoryAndImages(category.id);
+    } catch {
+      return showToast("分類暫時無法刪除，請重新整理後再試。");
+    }
+    const removedIds = new Set(categoryImages.map((image) => image.id));
+    categoryImages.forEach((image) => URL.revokeObjectURL(image.url));
+    const remaining = images.filter((image) => !removedIds.has(image.id));
+    setImages(remaining);
+    setCategories((current) => current.filter((item) => item.id !== category.id));
+    setCompareIds((current) => new Set([...current].filter((id) => !removedIds.has(id))));
+    setCollapsedCategories((current) => { const next = new Set(current); next.delete(category.id); return next; });
+    if (activeId && removedIds.has(activeId)) setActiveId(remaining[0]?.id ?? null);
+    showToast(`已刪除分類與 ${categoryImages.length} 張圖片。`);
+    refreshStorage();
+  }
+
+  async function clearLibrary() {
+    if (!images.length && !categories.length) return showToast("本機圖庫已經是空的。");
+    if (!window.confirm(`要清空本機圖庫嗎？將永久刪除 ${images.length} 張圖片與 ${categories.length} 個分類，此動作無法復原。`)) return;
+    try {
+      await clearStoredLibrary();
+    } catch {
+      return showToast("暫時無法清空圖庫，請重新整理後再試。");
+    }
+    images.forEach((image) => URL.revokeObjectURL(image.url));
+    setImages([]);
+    setCategories([]);
+    setCompareIds(new Set());
+    setCollapsedCategories(new Set());
+    setActiveId(null);
+    showToast("本機圖庫已清空。");
+    refreshStorage();
+  }
+
+  function toggleCategory(id: string) {
+    setCollapsedCategories((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
 
   function toggleCompare(id: string) {
@@ -355,8 +485,36 @@ export default function Home() {
     setInstallPrompt(null);
   }
 
+  async function disableOfflineInstall() {
+    if (!window.confirm("要解除這台裝置的離線功能嗎？這不會刪除圖庫圖片；若已安裝桌面捷徑，仍需從系統或瀏覽器選單移除該捷徑。")) return;
+    localStorage.setItem(OFFLINE_DISABLED_KEY, "1");
+    try {
+      const appScope = new URL(import.meta.env.BASE_URL, window.location.href).href;
+      if ("serviceWorker" in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(registrations.filter((registration) => registration.scope.startsWith(appScope)).map((registration) => registration.unregister()));
+      }
+      if ("caches" in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.filter((key) => key.includes(appScope)).map((key) => caches.delete(key)));
+      }
+      setOfflineState("disabled");
+      setInstallPrompt(null);
+      showToast("已解除離線功能與快取；桌面捷徑需另外移除。");
+    } catch {
+      showToast("離線資料未能完全移除，請從瀏覽器的網站資料設定清除。");
+    }
+  }
+
+  function enableOfflineInstall() {
+    localStorage.removeItem(OFFLINE_DISABLED_KEY);
+    window.location.reload();
+  }
+
   const offlineLabel = offlineState === "offline"
     ? "目前離線"
+    : offlineState === "disabled"
+      ? "離線功能已解除"
     : offlineState === "ready"
       ? "離線模式已就緒"
       : "正在準備離線模式";
@@ -375,7 +533,10 @@ export default function Home() {
         <div className="top-actions">
           <span className="privacy-pill"><i /> 圖片只留在這台裝置</span>
           <span className={`offline-pill ${offlineState}`}><i /> {offlineLabel}</span>
-          {installPrompt && <button className="install-button" onClick={() => void installApp()}>安裝到桌面</button>}
+          {installPrompt && offlineState !== "disabled" && <button className="install-button" onClick={() => void installApp()}>安裝到桌面</button>}
+          {offlineState === "disabled"
+            ? <button className="install-button" onClick={enableOfflineInstall}>重新啟用離線</button>
+            : <button className="install-button danger-text" onClick={() => void disableOfflineInstall()}>解除離線</button>}
           <button className="primary" onClick={() => inputRef.current?.click()}>＋ 新增背景</button>
           <input
             ref={inputRef}
@@ -399,39 +560,77 @@ export default function Home() {
             <span className="upload-icon">＋</span><span><strong>加入多張背景</strong><small>也可以直接拖曳進來</small></span>
           </button>
 
+          <div className="category-create">
+            <input
+              value={newCategoryName}
+              maxLength={30}
+              placeholder="新增分類名稱"
+              aria-label="新增分類名稱"
+              onChange={(event) => setNewCategoryName(event.target.value)}
+              onKeyDown={(event) => { if (event.key === "Enter") void createCategory(); }}
+            />
+            <button disabled={!newCategoryName.trim()} onClick={() => void createCategory()}>＋ 分類</button>
+          </div>
+
           <div className="library-list">
             {!ready && <div className="empty-library">正在開啟本機圖庫…</div>}
             {ready && !filteredImages.length && (
               <div className="empty-library">{images.length ? "沒有符合搜尋條件的圖片。" : "加入過的圖片會保留在這台裝置，下次開啟可直接繼續。"}</div>
             )}
-            {filteredImages.map((image) => (
-              <article key={image.id} className={`library-item ${activeImage?.id === image.id ? "active" : ""}`} onClick={() => setActiveId(image.id)}>
-                <div className="thumb"><img src={image.url} alt="" /><img src={STAGE_OVERLAY_URL} alt="" /></div>
-                <div className="item-copy">
-                  {editingId === image.id ? (
-                    <input
-                      className="rename-input"
-                      autoFocus
-                      value={editingName}
-                      onChange={(e) => setEditingName(e.target.value)}
-                      onBlur={() => commitRename(image)}
-                      onKeyDown={(e) => { if (e.key === "Enter") commitRename(image); if (e.key === "Escape") setEditingId(null); }}
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                  ) : <strong>{image.name}</strong>}
-                  <small>{image.note || "尚未加入備註"}</small>
-                </div>
-                <label className="compare-check" title="加入比較" onClick={(e) => e.stopPropagation()}>
-                  <input type="checkbox" checked={compareIds.has(image.id)} onChange={() => toggleCompare(image.id)} /><span>比較</span>
-                </label>
-                <div className="item-actions">
-                  <button title="重新命名" onClick={(e) => { e.stopPropagation(); setEditingId(image.id); setEditingName(image.name); }}>✎</button>
-                  <button title="刪除" onClick={(e) => { e.stopPropagation(); void deleteFromLibrary(image); }}>×</button>
-                </div>
-              </article>
-            ))}
+            {ready && libraryGroups.map((group) => {
+              const collapsed = collapsedCategories.has(group.id);
+              const totalCount = images.filter((image) => group.id === "uncategorized"
+                ? !image.categoryId || !categories.some((category) => category.id === image.categoryId)
+                : image.categoryId === group.id).length;
+              return (
+                <section className="library-group" key={group.id}>
+                  <div className="category-heading">
+                    <button className="category-toggle" onClick={() => toggleCategory(group.id)} aria-expanded={!collapsed}>
+                      <span>{collapsed ? "▸" : "▾"}</span><strong>{group.name}</strong><small>{totalCount}</small>
+                    </button>
+                    {group.removable && (
+                      <button className="category-delete" title="刪除分類及裡面圖片" onClick={() => {
+                        const category = categories.find((item) => item.id === group.id);
+                        if (category) void deleteCategory(category);
+                      }}>刪除</button>
+                    )}
+                  </div>
+                  {!collapsed && (
+                    <div className="category-items">
+                      {!group.images.length && <div className="empty-category">{search ? "此分類沒有符合搜尋的圖片" : "尚無圖片"}</div>}
+                      {group.images.map((image) => (
+                        <article key={image.id} className={`library-item ${activeImage?.id === image.id ? "active" : ""}`} onClick={() => setActiveId(image.id)}>
+                          <div className="thumb"><img src={image.url} alt="" /><img src={STAGE_OVERLAY_URL} alt="" /></div>
+                          <div className="item-copy">
+                            {editingId === image.id ? (
+                              <input
+                                className="rename-input"
+                                autoFocus
+                                value={editingName}
+                                onChange={(e) => setEditingName(e.target.value)}
+                                onBlur={() => commitRename(image)}
+                                onKeyDown={(e) => { if (e.key === "Enter") commitRename(image); if (e.key === "Escape") setEditingId(null); }}
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                            ) : <strong>{image.name}</strong>}
+                            <small>{image.note || "尚未加入備註"}</small>
+                          </div>
+                          <label className="compare-check" title="加入比較" onClick={(e) => e.stopPropagation()}>
+                            <input type="checkbox" checked={compareIds.has(image.id)} onChange={() => toggleCompare(image.id)} /><span>比較</span>
+                          </label>
+                          <div className="item-actions">
+                            <button title="重新命名" onClick={(e) => { e.stopPropagation(); setEditingId(image.id); setEditingName(image.name); }}>✎</button>
+                            <button title="刪除" onClick={(e) => { e.stopPropagation(); void deleteFromLibrary(image); }}>×</button>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              );
+            })}
           </div>
-          <div className="storage-status"><span>本機圖庫</span><strong>{storageText}</strong></div>
+          <div className="storage-status"><span>本機圖庫 · {storageText}</span><button onClick={() => void clearLibrary()}>清空圖庫</button></div>
         </aside>
 
         <section className="stage-panel">
@@ -464,7 +663,16 @@ export default function Home() {
                     <button className="secondary" onClick={resetActive}>重設</button>
                     <button className="primary export-button" onClick={() => void exportComposite(activeImage)}>↓ 匯出 PNG</button>
                   </div>
-                  <div className="note-row"><label htmlFor="image-note">背景備註</label><input id="image-note" value={activeImage.note} placeholder="例如：第二幕／暖色版本／導演首選" onChange={(e) => patchImage(activeImage.id, { note: e.target.value })} /><span>直接拖曳舞台中的圖片可調整位置</span></div>
+                  <div className="note-row">
+                    <label htmlFor="image-category">圖片分類</label>
+                    <select id="image-category" value={activeImage.categoryId ?? ""} onChange={(event) => patchImage(activeImage.id, { categoryId: event.target.value || null })}>
+                      <option value="">未分類</option>
+                      {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+                    </select>
+                    <label htmlFor="image-note">背景備註</label>
+                    <input id="image-note" value={activeImage.note} placeholder="例如：第二幕／暖色版本／導演首選" onChange={(e) => patchImage(activeImage.id, { note: e.target.value })} />
+                    <span>直接拖曳舞台中的圖片可調整位置</span>
+                  </div>
                 </div>
               )}
             </div>
