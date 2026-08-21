@@ -1,59 +1,43 @@
-import { sites } from "@openai/sites-vite-plugin";
-import vinext from "vinext";
+import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
-import hostingConfig from "./.openai/hosting.json";
+import { VitePWA } from "vite-plugin-pwa";
 
-const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
-  "00000000-0000-4000-8000-000000000000";
-
-const { d1, r2 } = hostingConfig;
-
-// macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
-const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
-
-const localBindingConfig = {
-  main: "./worker/index.ts",
-  compatibility_flags: ["nodejs_compat"],
-  d1_databases: d1
-    ? [
-        {
-          binding: d1,
-          database_name: "site-creator-d1",
-          database_id: SITE_CREATOR_PLACEHOLDER_DATABASE_ID,
-        },
-      ]
-    : [],
-  r2_buckets: r2
-    ? [
-        {
-          binding: r2,
-          bucket_name: "site-creator-r2",
-        },
-      ]
-    : [],
-};
-
-export default defineConfig(async () => {
-  // Keep Wrangler and Miniflare state project-local. These are non-secret tool
-  // settings; application environment belongs in ignored `.env*` files.
-  process.env.WRANGLER_WRITE_LOGS ??= "false";
-  process.env.WRANGLER_LOG_PATH ??= ".wrangler/logs";
-  process.env.MINIFLARE_REGISTRY_PATH ??= ".wrangler/registry";
-
-  // Wrangler snapshots its log path while the Cloudflare plugin is imported.
-  const { cloudflare } = await import("@cloudflare/vite-plugin");
-
-  return {
-    server: isCodexSeatbeltSandbox
-      ? { watch: { useFsEvents: false, usePolling: true } }
-      : undefined,
-    plugins: [
-      vinext(),
-      sites(),
-      cloudflare({
-        viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
-        config: localBindingConfig,
-      }),
-    ],
-  };
+export default defineConfig({
+  base: "/theatre-background-tool/",
+  plugins: [
+    react(),
+    VitePWA({
+      registerType: "autoUpdate",
+      includeAssets: ["favicon.svg", "pwa-192.png", "pwa-512.png", "stage-overlay.png"],
+      manifest: {
+        name: "劇場投影背景模擬器",
+        short_name: "劇場背景模擬",
+        description: "離線預覽、調整與比較多張劇場投影背景。",
+        lang: "zh-Hant",
+        start_url: "./",
+        scope: "./",
+        display: "standalone",
+        background_color: "#f2efe9",
+        theme_color: "#1c1a17",
+        icons: [
+          { src: "pwa-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+          { src: "pwa-512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" },
+        ],
+      },
+      workbox: {
+        globPatterns: ["**/*.{html,js,css,png,svg,webp}"],
+        cleanupOutdatedCaches: true,
+        clientsClaim: true,
+        skipWaiting: true,
+        navigateFallback: "index.html",
+      },
+      devOptions: {
+        enabled: true,
+        type: "module",
+      },
+    }),
+  ],
+  server: {
+    host: "127.0.0.1",
+  },
 });

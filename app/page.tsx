@@ -1,6 +1,7 @@
 "use client";
 
 import { PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { registerSW } from "virtual:pwa-register";
 
 type ViewMode = "single" | "compare";
 type FitMode = "cover" | "contain";
@@ -15,11 +16,17 @@ type StoredImage = {
   transform: Transform;
 };
 type LibraryImage = StoredImage & { url: string };
+type OfflineState = "preparing" | "ready" | "offline";
+interface InstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
+}
 
 const DB_NAME = "stage-view-library";
 const STORE_NAME = "backgrounds";
 const DEFAULT_TRANSFORM: Transform = { scale: 100, x: 0, y: 0, brightness: 100, fit: "cover" };
 const MAX_COMPARE = 4;
+const STAGE_OVERLAY_URL = `${import.meta.env.BASE_URL}stage-overlay.png`;
 
 function openLibrary() {
   return new Promise<IDBDatabase>((resolve, reject) => {
@@ -134,7 +141,7 @@ function StageCanvas({
           transform: `translate3d(${image.transform.x}%, ${image.transform.y}%, 0) scale(${image.transform.scale / 100})`,
         }}
       />
-      <img className="stage-overlay" src="/stage-overlay.png" alt="劇場舞台比例模擬框" draggable={false} />
+      <img className="stage-overlay" src={STAGE_OVERLAY_URL} alt="劇場舞台比例模擬框" draggable={false} />
       {label && <span className="compare-label">{label}</span>}
     </div>
   );
@@ -152,6 +159,8 @@ export default function Home() {
   const [draggingFiles, setDraggingFiles] = useState(false);
   const [storageText, setStorageText] = useState("本機儲存");
   const [toast, setToast] = useState("");
+  const [offlineState, setOfflineState] = useState<OfflineState>(() => navigator.onLine ? "preparing" : "offline");
+  const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const urlsRef = useRef<string[]>([]);
 
@@ -172,6 +181,37 @@ export default function Home() {
       .finally(() => setReady(true));
     refreshStorage();
     return () => urlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+  }, []);
+
+  useEffect(() => {
+    const handleOnline = () => setOfflineState("ready");
+    const handleOffline = () => setOfflineState("offline");
+    const handleInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as InstallPromptEvent);
+    };
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    window.addEventListener("beforeinstallprompt", handleInstallPrompt);
+
+    registerSW({
+      immediate: true,
+      onOfflineReady: () => setOfflineState(navigator.onLine ? "ready" : "offline"),
+      onRegisterError: () => showToast("離線功能暫時無法啟用，請重新整理後再試。"),
+    });
+
+    if ("serviceWorker" in navigator) {
+      void navigator.serviceWorker.ready.then(() => {
+        setOfflineState(navigator.onLine ? "ready" : "offline");
+      });
+    }
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("beforeinstallprompt", handleInstallPrompt);
+    };
   }, []);
 
   const activeImage = images.find((image) => image.id === activeId) ?? images[0] ?? null;
@@ -198,21 +238,28 @@ export default function Home() {
     const files = Array.from(fileList).filter((file) => file.type.startsWith("image/"));
     if (!files.length) return showToast("請選擇 JPG、PNG 或 WEBP 圖片。" );
     const added: LibraryImage[] = [];
-    for (const file of files) {
-      const stored: StoredImage = {
-        id: crypto.randomUUID(),
-        name: file.name.replace(/\.[^.]+$/, ""),
-        note: "",
-        blob: file,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        transform: { ...DEFAULT_TRANSFORM },
-      };
-      await saveImage(stored);
-      const url = URL.createObjectURL(file);
-      urlsRef.current.push(url);
-      added.push({ ...stored, url });
+    try {
+      for (const file of files) {
+        const stored: StoredImage = {
+          id: crypto.randomUUID(),
+          name: file.name.replace(/\.[^.]+$/, ""),
+          note: "",
+          blob: file,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          transform: { ...DEFAULT_TRANSFORM },
+        };
+        await saveImage(stored);
+        const url = URL.createObjectURL(file);
+        urlsRef.current.push(url);
+        added.push({ ...stored, url });
+      }
+    } catch (error) {
+      const isQuotaError = error instanceof DOMException && error.name === "QuotaExceededError";
+      showToast(isQuotaError ? "本機儲存空間不足，請刪除部分圖片後再試。" : "圖片無法寫入本機圖庫，請稍後再試。" );
     }
+    if (!added.length) return;
+    void navigator.storage?.persist?.();
     setImages((current) => [...added, ...current]);
     setActiveId(added[0].id);
     setCompareIds((current) => {
@@ -228,7 +275,7 @@ export default function Home() {
     setImages((current) => current.map((image) => {
       if (image.id !== id) return image;
       const next = { ...image, ...patch, updatedAt: Date.now() };
-      void saveImage(withoutUrl(next));
+      void saveImage(withoutUrl(next)).catch(() => showToast("變更暫時無法儲存，請確認本機空間。"));
       return next;
     }));
   }
@@ -239,7 +286,11 @@ export default function Home() {
 
   async function deleteFromLibrary(image: LibraryImage) {
     if (!window.confirm(`要從本機圖庫刪除「${image.name}」嗎？`)) return;
-    await removeImage(image.id);
+    try {
+      await removeImage(image.id);
+    } catch {
+      return showToast("暫時無法刪除，請重新整理後再試。" );
+    }
     URL.revokeObjectURL(image.url);
     setImages((current) => current.filter((item) => item.id !== image.id));
     setCompareIds((current) => { const next = new Set(current); next.delete(image.id); return next; });
@@ -269,7 +320,7 @@ export default function Home() {
   }
 
   async function exportComposite(image: LibraryImage) {
-    const [background, overlay] = await Promise.all([loadHtmlImage(image.url), loadHtmlImage("/stage-overlay.png")]);
+    const [background, overlay] = await Promise.all([loadHtmlImage(image.url), loadHtmlImage(STAGE_OVERLAY_URL)]);
     const canvas = document.createElement("canvas");
     canvas.width = 1798;
     canvas.height = 1008;
@@ -296,6 +347,20 @@ export default function Home() {
     showToast("模擬圖已匯出。" );
   }
 
+  async function installApp() {
+    if (!installPrompt) return;
+    await installPrompt.prompt();
+    const choice = await installPrompt.userChoice;
+    if (choice.outcome === "accepted") showToast("已加入桌面，可像一般 App 一樣開啟。" );
+    setInstallPrompt(null);
+  }
+
+  const offlineLabel = offlineState === "offline"
+    ? "目前離線"
+    : offlineState === "ready"
+      ? "離線模式已就緒"
+      : "正在準備離線模式";
+
   return (
     <main
       className={`app-shell ${draggingFiles ? "is-file-dragging" : ""}`}
@@ -309,6 +374,8 @@ export default function Home() {
         <div className="brand-copy"><p className="eyebrow">STAGE VIEW</p><h1>劇場投影背景模擬器</h1></div>
         <div className="top-actions">
           <span className="privacy-pill"><i /> 圖片只留在這台裝置</span>
+          <span className={`offline-pill ${offlineState}`}><i /> {offlineLabel}</span>
+          {installPrompt && <button className="install-button" onClick={() => void installApp()}>安裝到桌面</button>}
           <button className="primary" onClick={() => inputRef.current?.click()}>＋ 新增背景</button>
           <input
             ref={inputRef}
@@ -339,7 +406,7 @@ export default function Home() {
             )}
             {filteredImages.map((image) => (
               <article key={image.id} className={`library-item ${activeImage?.id === image.id ? "active" : ""}`} onClick={() => setActiveId(image.id)}>
-                <div className="thumb"><img src={image.url} alt="" /><img src="/stage-overlay.png" alt="" /></div>
+                <div className="thumb"><img src={image.url} alt="" /><img src={STAGE_OVERLAY_URL} alt="" /></div>
                 <div className="item-copy">
                   {editingId === image.id ? (
                     <input
