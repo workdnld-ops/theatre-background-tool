@@ -17,7 +17,7 @@ type ProjectionImage = {
   transform: ProjectionTransform;
 };
 
-type PresetName = "中央" | "前排" | "左側" | "右側" | "俯視";
+type PresetName = "模板視角" | "前排" | "左側" | "右側" | "俯視";
 
 const STAGE = {
   openingWidth: 15.42,
@@ -30,6 +30,21 @@ const STAGE = {
 
 const SCREEN_HEIGHT = STAGE.openingHeight;
 const SCREEN_WIDTH = SCREEN_HEIGHT * 16 / 9;
+
+// Calibrated against 快速模擬2.png (1920 × 1080). Its transparent projection
+// area occupies approximately x 343–1584 and y 243–934. Keeping this camera
+// and the renderer at 16:9 makes the projected plane line up with that mask.
+const TEMPLATE_CAMERA = {
+  fov: 25.9,
+  position: [0, 1.13, -18.25] as [number, number, number],
+  target: [0, 4.25, 6.5] as [number, number, number],
+};
+
+function fitSixteenByNine(width: number, height: number) {
+  const aspect = 16 / 9;
+  if (width / Math.max(1, height) > aspect) return { width: height * aspect, height };
+  return { width, height: width / aspect };
+}
 
 function makeMaterial(color: number, roughness = 0.78, metalness = 0.02) {
   return new THREE.MeshStandardMaterial({ color, roughness, metalness });
@@ -111,7 +126,7 @@ export default function Stage3D({ image }: { image: ProjectionImage | null }) {
   const controlsRef = useRef<OrbitControls | null>(null);
   const screenMaterialRef = useRef<THREE.MeshBasicMaterial | null>(null);
   const textureRef = useRef<THREE.Texture | null>(null);
-  const [preset, setPreset] = useState<PresetName>("中央");
+  const [preset, setPreset] = useState<PresetName>("模板視角");
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -127,7 +142,8 @@ export default function Stage3D({ image }: { image: ProjectionImage | null }) {
     }
 
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setSize(mount.clientWidth, mount.clientHeight, false);
+    const initialSize = fitSixteenByNine(mount.clientWidth, mount.clientHeight);
+    renderer.setSize(initialSize.width, initialSize.height, false);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 0.9;
@@ -140,14 +156,14 @@ export default function Stage3D({ image }: { image: ProjectionImage | null }) {
     scene.background = new THREE.Color(0x070809);
     scene.fog = new THREE.FogExp2(0x070809, 0.016);
 
-    const camera = new THREE.PerspectiveCamera(46, mount.clientWidth / Math.max(1, mount.clientHeight), 0.1, 100);
-    camera.position.set(0, 4.4, -18);
+    const camera = new THREE.PerspectiveCamera(TEMPLATE_CAMERA.fov, 16 / 9, 0.1, 100);
+    camera.position.set(...TEMPLATE_CAMERA.position);
     cameraRef.current = camera;
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.07;
-    controls.target.set(0, 3.7, 7.1);
+    controls.target.set(...TEMPLATE_CAMERA.target);
     controls.minDistance = 2.5;
     controls.maxDistance = 48;
     controls.maxPolarAngle = Math.PI * 0.92;
@@ -223,10 +239,11 @@ export default function Stage3D({ image }: { image: ProjectionImage | null }) {
     scene.add(grid);
 
     const resizeObserver = new ResizeObserver(() => {
-      const width = Math.max(1, mount.clientWidth);
-      const height = Math.max(1, mount.clientHeight);
-      renderer.setSize(width, height, false);
-      camera.aspect = width / height;
+      const availableWidth = Math.max(1, mount.clientWidth);
+      const availableHeight = Math.max(1, mount.clientHeight);
+      const size = fitSixteenByNine(availableWidth, availableHeight);
+      renderer.setSize(size.width, size.height, false);
+      camera.aspect = 16 / 9;
       camera.updateProjectionMatrix();
     });
     resizeObserver.observe(mount);
@@ -286,15 +303,17 @@ export default function Stage3D({ image }: { image: ProjectionImage | null }) {
     const camera = cameraRef.current;
     const controls = controlsRef.current;
     if (!camera || !controls) return;
-    const presets: Record<PresetName, { position: [number, number, number]; target: [number, number, number] }> = {
-      中央: { position: [0, 4.4, -18], target: [0, 3.7, 7.1] },
-      前排: { position: [0, 1.65, -5.2], target: [0, 3.8, 8.0] },
-      左側: { position: [-11.5, 4.6, -13.5], target: [0, 3.8, 7.2] },
-      右側: { position: [11.5, 4.6, -13.5], target: [0, 3.8, 7.2] },
-      俯視: { position: [0, 27, -2], target: [0, 0, 7.2] },
+    const presets: Record<PresetName, { fov: number; position: [number, number, number]; target: [number, number, number] }> = {
+      模板視角: { ...TEMPLATE_CAMERA },
+      前排: { fov: 48, position: [0, 0.78, -5.2], target: [0, 3.8, 8.0] },
+      左側: { fov: 38, position: [-11.5, 2.8, -13.5], target: [0, 3.8, 7.2] },
+      右側: { fov: 38, position: [11.5, 2.8, -13.5], target: [0, 3.8, 7.2] },
+      俯視: { fov: 42, position: [0, 27, -2], target: [0, 0, 7.2] },
     };
     const next = presets[name];
+    camera.fov = next.fov;
     camera.position.set(...next.position);
+    camera.updateProjectionMatrix();
     controls.target.set(...next.target);
     controls.update();
     setPreset(name);
@@ -316,10 +335,11 @@ export default function Stage3D({ image }: { image: ProjectionImage | null }) {
       <div className="stage3d-badges">
         <span>鏡框 15.42 × 8.50 m</span>
         <span>天幕深度 10.65 m</span>
-        <span className="prototype">第一版比例模型</span>
+        <span>投影圖面 16:9</span>
+        <span className="prototype">已依快速模擬2校正</span>
       </div>
       <div className="stage3d-presets" aria-label="3D 預設視角">
-        {(["中央", "前排", "左側", "右側", "俯視"] as PresetName[]).map((name) => (
+        {(["模板視角", "前排", "左側", "右側", "俯視"] as PresetName[]).map((name) => (
           <button key={name} className={preset === name ? "active" : ""} onClick={() => moveCamera(name)}>{name}</button>
         ))}
         <button className="export" onClick={exportView}>↓ 匯出視角</button>
