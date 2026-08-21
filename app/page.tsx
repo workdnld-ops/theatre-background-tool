@@ -135,6 +135,37 @@ function loadHtmlImage(src: string) {
   });
 }
 
+function drawStageToContext(
+  context: CanvasRenderingContext2D,
+  image: LibraryImage,
+  background: HTMLImageElement,
+  overlay: HTMLImageElement,
+  x: number,
+  y: number,
+  canvasWidth: number,
+  canvasHeight: number,
+) {
+  context.fillStyle = "#000";
+  context.fillRect(x, y, canvasWidth, canvasHeight);
+  const baseScale = image.transform.fit === "cover"
+    ? Math.max(canvasWidth / background.naturalWidth, canvasHeight / background.naturalHeight)
+    : Math.min(canvasWidth / background.naturalWidth, canvasHeight / background.naturalHeight);
+  const scale = baseScale * (image.transform.scale / 100);
+  const width = background.naturalWidth * scale;
+  const height = background.naturalHeight * scale;
+  const imageX = x + (canvasWidth - width) / 2 + (image.transform.x / 100) * canvasWidth;
+  const imageY = y + (canvasHeight - height) / 2 + (image.transform.y / 100) * canvasHeight;
+  context.save();
+  context.beginPath();
+  context.rect(x, y, canvasWidth, canvasHeight);
+  context.clip();
+  context.filter = `brightness(${image.transform.brightness}%)`;
+  context.drawImage(background, imageX, imageY, width, height);
+  context.filter = "none";
+  context.drawImage(overlay, x, y, canvasWidth, canvasHeight);
+  context.restore();
+}
+
 function StageCanvas({
   image,
   interactive = false,
@@ -200,6 +231,65 @@ function StageCanvas({
   );
 }
 
+function InlineNoteEditor({
+  note,
+  onSave,
+  compact = false,
+  placeholder = "雙擊新增備註",
+}: {
+  note: string;
+  onSave: (note: string) => void;
+  compact?: boolean;
+  placeholder?: string;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(note);
+
+  useEffect(() => {
+    if (!editing) setDraft(note);
+  }, [note, editing]);
+
+  function commit() {
+    const next = draft.trim();
+    if (next !== note) onSave(next);
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <input
+        className={`inline-note-input ${compact ? "compact" : ""}`}
+        autoFocus
+        draggable={false}
+        value={draft}
+        aria-label="編輯圖片備註"
+        placeholder={placeholder}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onClick={(event) => event.stopPropagation()}
+        onDoubleClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") commit();
+          if (event.key === "Escape") { setDraft(note); setEditing(false); }
+        }}
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      draggable={false}
+      className={`inline-note-display ${compact ? "compact" : ""} ${note ? "" : "empty"}`}
+      title="雙擊編輯備註"
+      onDoubleClick={(event) => { event.stopPropagation(); setDraft(note); setEditing(true); }}
+      onKeyDown={(event) => { if (event.key === "Enter") setEditing(true); }}
+    >
+      {note || placeholder}
+    </button>
+  );
+}
+
 export default function Home() {
   const [images, setImages] = useState<LibraryImage[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -209,8 +299,6 @@ export default function Home() {
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>("single");
   const [search, setSearch] = useState("");
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editingName, setEditingName] = useState("");
   const [ready, setReady] = useState(false);
   const [draggingFiles, setDraggingFiles] = useState(false);
   const [draggingImageId, setDraggingImageId] = useState<string | null>(null);
@@ -524,12 +612,6 @@ export default function Home() {
     finishImageDrag();
   }
 
-  function commitRename(image: LibraryImage) {
-    const name = editingName.trim();
-    if (name) patchImage(image.id, { name });
-    setEditingId(null);
-  }
-
   function resetActive() {
     if (activeImage) updateTransform(activeImage.id, { ...DEFAULT_TRANSFORM });
   }
@@ -541,25 +623,64 @@ export default function Home() {
     canvas.height = 1008;
     const context = canvas.getContext("2d");
     if (!context) return;
-    context.fillStyle = "#000";
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    const baseScale = image.transform.fit === "cover"
-      ? Math.max(canvas.width / background.naturalWidth, canvas.height / background.naturalHeight)
-      : Math.min(canvas.width / background.naturalWidth, canvas.height / background.naturalHeight);
-    const scale = baseScale * (image.transform.scale / 100);
-    const width = background.naturalWidth * scale;
-    const height = background.naturalHeight * scale;
-    const x = (canvas.width - width) / 2 + (image.transform.x / 100) * canvas.width;
-    const y = (canvas.height - height) / 2 + (image.transform.y / 100) * canvas.height;
-    context.filter = `brightness(${image.transform.brightness}%)`;
-    context.drawImage(background, x, y, width, height);
-    context.filter = "none";
-    context.drawImage(overlay, 0, 0, canvas.width, canvas.height);
+    drawStageToContext(context, image, background, overlay, 0, 0, canvas.width, canvas.height);
     const link = document.createElement("a");
     link.download = `${image.name}-劇場模擬.png`;
     link.href = canvas.toDataURL("image/png");
     link.click();
     showToast("模擬圖已匯出。" );
+  }
+
+  async function exportComparison() {
+    if (!comparedImages.length) return showToast("請先選擇要比較的圖片。");
+    const overlay = await loadHtmlImage(STAGE_OVERLAY_URL);
+    const backgrounds = await Promise.all(comparedImages.map((image) => loadHtmlImage(image.url)));
+    const columns = comparedImages.length === 1 ? 1 : 2;
+    const rows = Math.ceil(comparedImages.length / columns);
+    const tileWidth = 1200;
+    const stageHeight = Math.round(tileWidth * 1008 / 1798);
+    const metaHeight = 86;
+    const gap = 24;
+    const padding = 32;
+    const canvas = document.createElement("canvas");
+    canvas.width = padding * 2 + columns * tileWidth + (columns - 1) * gap;
+    canvas.height = padding * 2 + rows * (stageHeight + metaHeight) + (rows - 1) * gap;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.fillStyle = "#242321";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+
+    comparedImages.forEach((image, index) => {
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+      const x = padding + column * (tileWidth + gap);
+      const y = padding + row * (stageHeight + metaHeight + gap);
+      drawStageToContext(context, image, backgrounds[index], overlay, x, y, tileWidth, stageHeight);
+      context.fillStyle = "#fffefa";
+      context.fillRect(x, y + stageHeight, tileWidth, metaHeight);
+      context.fillStyle = "#d75d36";
+      context.beginPath();
+      context.arc(x + 42, y + stageHeight + 43, 23, 0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = "#fff";
+      context.font = "900 24px sans-serif";
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      context.fillText(String.fromCharCode(65 + index), x + 42, y + stageHeight + 43);
+      context.textAlign = "left";
+      context.fillStyle = "#1c1a17";
+      context.font = '700 24px "Microsoft JhengHei", sans-serif';
+      context.fillText(image.name, x + 82, y + stageHeight + 31, tileWidth - 105);
+      context.fillStyle = "#80766d";
+      context.font = '18px "Microsoft JhengHei", sans-serif';
+      context.fillText(image.note || "無備註", x + 82, y + stageHeight + 60, tileWidth - 105);
+    });
+
+    const link = document.createElement("a");
+    link.download = `劇場背景並排比較-${new Date().toISOString().slice(0, 10)}.png`;
+    link.href = canvas.toDataURL("image/png");
+    link.click();
+    showToast("並排比較圖已匯出。");
   }
 
   async function installApp() {
@@ -699,26 +820,15 @@ export default function Home() {
                           onDragStart={(event) => startImageDrag(event, image.id)}
                           onDragEnd={finishImageDrag}
                         >
-                          <div className="thumb"><img src={image.url} alt="" /><img src={STAGE_OVERLAY_URL} alt="" /></div>
-                          <div className="item-copy">
-                            {editingId === image.id ? (
-                              <input
-                                className="rename-input"
-                                autoFocus
-                                value={editingName}
-                                onChange={(e) => setEditingName(e.target.value)}
-                                onBlur={() => commitRename(image)}
-                                onKeyDown={(e) => { if (e.key === "Enter") commitRename(image); if (e.key === "Escape") setEditingId(null); }}
-                                onClick={(e) => e.stopPropagation()}
-                              />
-                            ) : <strong>{image.name}</strong>}
-                            <small>{image.note || "尚未加入備註"}</small>
-                          </div>
-                          <label className="compare-check" title="加入比較" onClick={(e) => e.stopPropagation()}>
+                          <label className="compare-check" title="加入比較" onClick={(event) => event.stopPropagation()}>
                             <input type="checkbox" checked={compareIds.includes(image.id)} onChange={() => toggleCompare(image.id)} /><span>比較</span>
                           </label>
+                          <div className="thumb"><img src={image.url} alt="" /><img src={STAGE_OVERLAY_URL} alt="" /></div>
+                          <div className="item-copy">
+                            <strong>{image.name}</strong>
+                            <InlineNoteEditor compact note={image.note} onSave={(note) => patchImage(image.id, { note })} />
+                          </div>
                           <div className="item-actions">
-                            <button title="重新命名" onClick={(e) => { e.stopPropagation(); setEditingId(image.id); setEditingName(image.name); }}>✎</button>
                             <button title="刪除" onClick={(e) => { e.stopPropagation(); void deleteFromLibrary(image); }}>×</button>
                           </div>
                         </article>
@@ -739,6 +849,7 @@ export default function Home() {
               <button className={viewMode === "single" ? "active" : ""} onClick={() => setViewMode("single")}>單張調整</button>
               <button className={viewMode === "compare" ? "active" : ""} onClick={() => setViewMode("compare")}>並排比較 <b>{compareIds.length || ""}</b></button>
               {viewMode === "compare" && <button className="clear-compare" disabled={!compareIds.length} onClick={() => { setCompareIds([]); showToast("已清空比較選擇。"); }}>清空重選</button>}
+              {viewMode === "compare" && <button className="export-compare" disabled={!comparedImages.length} onClick={() => void exportComparison()}>↓ 匯出比較圖</button>}
             </div>
           </div>
 
@@ -769,8 +880,13 @@ export default function Home() {
                       <option value="">未分類</option>
                       {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
                     </select>
-                    <label htmlFor="image-note">背景備註</label>
-                    <input id="image-note" value={activeImage.note} placeholder="例如：第二幕／暖色版本／導演首選" onChange={(e) => patchImage(activeImage.id, { note: e.target.value })} />
+                    <label>背景備註</label>
+                    <InlineNoteEditor
+                      key={`single-note-${activeImage.id}`}
+                      note={activeImage.note}
+                      placeholder="雙擊新增備註，例如：第二幕／暖色版本／導演首選"
+                      onSave={(note) => patchImage(activeImage.id, { note })}
+                    />
                     <span>直接拖曳舞台中的圖片可調整位置</span>
                   </div>
                 </div>
@@ -802,7 +918,13 @@ export default function Home() {
                       onDrop={(event) => handleCompareDrop(event, image.id)}
                     >
                       <StageCanvas image={image} label={String.fromCharCode(65 + index)} onActivate={() => setActiveId(image.id)} />
-                      <div className="compare-meta"><div><strong>{image.name}</strong><small>{image.note || "無備註"}</small></div><button onClick={() => { setActiveId(image.id); setViewMode("single"); }}>調整</button></div>
+                      <div className="compare-meta">
+                        <div>
+                          <strong>{image.name}</strong>
+                          <InlineNoteEditor compact note={image.note} onSave={(note) => patchImage(image.id, { note })} />
+                        </div>
+                        <button onClick={() => { setActiveId(image.id); setViewMode("single"); }}>調整</button>
+                      </div>
                     </article>
                   ))}
                 </div>
