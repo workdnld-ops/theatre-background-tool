@@ -1,6 +1,6 @@
 "use client";
 
-import { PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { PointerEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { registerSW } from "virtual:pwa-register";
 
 type ViewMode = "single" | "compare";
@@ -169,20 +169,45 @@ function drawStageToContext(
 function StageCanvas({
   image,
   interactive = false,
+  fitContainer = false,
   label,
   onActivate,
   onTransform,
 }: {
   image: LibraryImage;
   interactive?: boolean;
+  fitContainer?: boolean;
   label?: string;
   onActivate?: () => void;
   onTransform?: (transform: Transform) => void;
 }) {
   const canvasRef = useRef<HTMLDivElement>(null);
+  const [fittedSize, setFittedSize] = useState<{ width: number; height: number } | null>(null);
   const lastPointer = useRef<{ x: number; y: number } | null>(null);
   const transformRef = useRef(image.transform);
   transformRef.current = image.transform;
+
+  useLayoutEffect(() => {
+    if (!fitContainer) return;
+    const canvas = canvasRef.current;
+    const parent = canvas?.parentElement;
+    if (!parent) return;
+    const container: HTMLElement = parent;
+    const ratio = 1798 / 1008;
+
+    function measure() {
+      const style = window.getComputedStyle(container);
+      const availableWidth = container.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const availableHeight = container.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+      const width = Math.max(1, Math.min(availableWidth, availableHeight * ratio, 1120));
+      setFittedSize({ width, height: width / ratio });
+    }
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [fitContainer]);
 
   function pointerDown(event: PointerEvent<HTMLDivElement>) {
     if (!interactive) return;
@@ -207,7 +232,8 @@ function StageCanvas({
   return (
     <div
       ref={canvasRef}
-      className={`stage-canvas ${interactive ? "is-interactive" : ""}`}
+      className={`stage-canvas ${interactive ? "is-interactive" : ""} ${fitContainer ? "fits-container" : ""}`}
+      style={fitContainer && fittedSize ? { width: fittedSize.width, height: fittedSize.height } : undefined}
       onClick={onActivate}
       onPointerDown={pointerDown}
       onPointerMove={pointerMove}
@@ -857,7 +883,7 @@ export default function Home() {
             <div className="single-view">
               <div className="canvas-wrap">
                 {activeImage ? (
-                  <StageCanvas image={activeImage} interactive onTransform={(transform) => updateTransform(activeImage.id, transform)} />
+                  <StageCanvas image={activeImage} interactive fitContainer onTransform={(transform) => updateTransform(activeImage.id, transform)} />
                 ) : (
                   <button className="empty-stage" onClick={() => inputRef.current?.click()}>
                     <span>＋</span><strong>把背景圖放進舞台</strong><small>可一次選取多張 JPG、PNG 或 WEBP</small>

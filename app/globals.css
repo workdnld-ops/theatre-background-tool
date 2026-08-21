@@ -109,7 +109,8 @@ h3 { font-size: 18px; }
 .view-tabs .export-compare:disabled { opacity: .4; cursor: default; }
 .single-view { min-height: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 .canvas-wrap { min-height: 0; flex: 1 1 0; background: #242321; border-radius: 14px; padding: clamp(8px, 1.5vw, 18px); display: grid; place-items: center; box-shadow: inset 0 0 0 1px #ffffff12; overflow: hidden; }
-.stage-canvas { position: relative; width: min(100%, 1120px); max-height: 100%; aspect-ratio: 1798/1008; overflow: hidden; background: #050505; box-shadow: 0 15px 40px #0008; touch-action: none; }
+.stage-canvas { position: relative; width: min(100%, 1120px); aspect-ratio: 1798/1008; overflow: hidden; background: #050505; box-shadow: 0 15px 40px #0008; touch-action: none; }
+.stage-canvas.fits-container { width: 1px; height: 1px; max-width: none; max-height: none; aspect-ratio: auto; flex: none; }
 .stage-canvas.is-interactive { cursor: grab; }
 .stage-canvas.is-interactive:active { cursor: grabbing; }
 .background-image { position: absolute; inset: 0; width: 100%; height: 100%; user-select: none; transform-origin: center; will-change: transform, filter; }
