@@ -28,7 +28,7 @@ type CameraPose = {
 type StageObjectSettings = {
   peopleVisible: boolean;
   personHeightCm: number;
-  backdrop158Visible: boolean;
+  backdrop252Visible: boolean;
   backdrop202Visible: boolean;
 };
 
@@ -55,7 +55,7 @@ const PERSON_MODEL_HEIGHT = 1.7;
 const DEFAULT_OBJECT_SETTINGS: StageObjectSettings = {
   peopleVisible: true,
   personHeightCm: 172,
-  backdrop158Visible: true,
+  backdrop252Visible: true,
   backdrop202Visible: true,
 };
 
@@ -94,12 +94,12 @@ function readTemplateCamera(): CameraPose | null {
 
 function readObjectSettings(): StageObjectSettings {
   try {
-    const stored = JSON.parse(localStorage.getItem(STAGE_OBJECT_STORAGE_KEY) || "null") as Partial<StageObjectSettings> | null;
+    const stored = JSON.parse(localStorage.getItem(STAGE_OBJECT_STORAGE_KEY) || "null") as (Partial<StageObjectSettings> & { backdrop158Visible?: boolean }) | null;
     if (!stored) return DEFAULT_OBJECT_SETTINGS;
     return {
       peopleVisible: stored.peopleVisible ?? DEFAULT_OBJECT_SETTINGS.peopleVisible,
       personHeightCm: Math.min(185, Math.max(158, Number(stored.personHeightCm) || DEFAULT_OBJECT_SETTINGS.personHeightCm)),
-      backdrop158Visible: stored.backdrop158Visible ?? DEFAULT_OBJECT_SETTINGS.backdrop158Visible,
+      backdrop252Visible: stored.backdrop252Visible ?? stored.backdrop158Visible ?? DEFAULT_OBJECT_SETTINGS.backdrop252Visible,
       backdrop202Visible: stored.backdrop202Visible ?? DEFAULT_OBJECT_SETTINGS.backdrop202Visible,
     };
   } catch {
@@ -256,7 +256,7 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
   const screenMaterialRef = useRef<THREE.MeshBasicMaterial | null>(null);
   const textureRef = useRef<THREE.Texture | null>(null);
   const peopleRef = useRef<THREE.Group[]>([]);
-  const backdrop158Ref = useRef<THREE.Group | null>(null);
+  const backdrop252Ref = useRef<THREE.Group | null>(null);
   const backdrop202Ref = useRef<THREE.Group | null>(null);
   const presetRef = useRef<PresetName>("模板視角");
   const [preset, setPreset] = useState<PresetName>("模板視角");
@@ -329,7 +329,7 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
     const line = makeMaterial(0xc8c3ba, 0.82);
     const audienceFloor = makeMaterial(0x111113, 0.95);
     const personMaterial = makeMaterial(0x747678, 0.72, 0.05);
-    const backdrop158Material = makeMaterial(0x765548, 0.88);
+    const backdrop252Material = makeMaterial(0x765548, 0.88);
     const backdrop202Material = makeMaterial(0x5f4940, 0.86);
     const backdropFrameMaterial = makeMaterial(0x2b2927, 0.65, 0.08);
 
@@ -395,18 +395,18 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
     people.forEach((person) => scene.add(person));
     peopleRef.current = people;
 
-    const backdrop158 = createBackdropPanel(backdrop158Material, backdropFrameMaterial, 1.2, 1.58, -2.9, 5.8, -0.06);
-    const backdrop202 = createBackdropPanel(backdrop202Material, backdropFrameMaterial, 1.2, 2.02, 2.9, 5.8, 0.06);
-    backdrop158Ref.current = backdrop158;
+    const backdrop252 = createBackdropPanel(backdrop252Material, backdropFrameMaterial, 1.22, 2.52, -2.9, 5.8, -0.06);
+    const backdrop202 = createBackdropPanel(backdrop202Material, backdropFrameMaterial, 1.22, 2.02, 2.9, 5.8, 0.06);
+    backdrop252Ref.current = backdrop252;
     backdrop202Ref.current = backdrop202;
-    scene.add(backdrop158, backdrop202);
+    scene.add(backdrop252, backdrop202);
 
     const initialPersonScale = objectSettings.personHeightCm / 100 / PERSON_MODEL_HEIGHT;
     people.forEach((person) => {
       person.visible = objectSettings.peopleVisible;
       person.scale.setScalar(initialPersonScale);
     });
-    backdrop158.visible = objectSettings.backdrop158Visible;
+    backdrop252.visible = objectSettings.backdrop252Visible;
     backdrop202.visible = objectSettings.backdrop202Visible;
 
     const grid = new THREE.GridHelper(30, 30, 0x784a37, 0x292a2b);
@@ -451,7 +451,7 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
       controlsRef.current = null;
       screenMaterialRef.current = null;
       peopleRef.current = [];
-      backdrop158Ref.current = null;
+      backdrop252Ref.current = null;
       backdrop202Ref.current = null;
     };
   }, []);
@@ -462,7 +462,7 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
       person.visible = objectSettings.peopleVisible;
       person.scale.setScalar(personScale);
     });
-    if (backdrop158Ref.current) backdrop158Ref.current.visible = objectSettings.backdrop158Visible;
+    if (backdrop252Ref.current) backdrop252Ref.current.visible = objectSettings.backdrop252Visible;
     if (backdrop202Ref.current) backdrop202Ref.current.visible = objectSettings.backdrop202Visible;
     try {
       localStorage.setItem(STAGE_OBJECT_STORAGE_KEY, JSON.stringify(objectSettings));
@@ -555,8 +555,8 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
       <div className="stage3d-objects" aria-label="3D 物件控制">
         <div className="stage3d-objects-title"><strong>3D 物件</strong><span>顯示／隱藏</span></div>
         <div className="stage3d-object-toggles">
-          <label><input type="checkbox" checked={objectSettings.backdrop158Visible} onChange={(event) => setObjectSettings((current) => ({ ...current, backdrop158Visible: event.target.checked }))} /><span>背板</span><b>120 × 158 cm</b></label>
-          <label><input type="checkbox" checked={objectSettings.backdrop202Visible} onChange={(event) => setObjectSettings((current) => ({ ...current, backdrop202Visible: event.target.checked }))} /><span>背板</span><b>120 × 202 cm</b></label>
+          <label><input type="checkbox" checked={objectSettings.backdrop252Visible} onChange={(event) => setObjectSettings((current) => ({ ...current, backdrop252Visible: event.target.checked }))} /><span>背板</span><b>122 × 252 cm</b></label>
+          <label><input type="checkbox" checked={objectSettings.backdrop202Visible} onChange={(event) => setObjectSettings((current) => ({ ...current, backdrop202Visible: event.target.checked }))} /><span>背板</span><b>122 × 202 cm</b></label>
           <label><input type="checkbox" checked={objectSettings.peopleVisible} onChange={(event) => setObjectSettings((current) => ({ ...current, peopleVisible: event.target.checked }))} /><span>人物</span><b>{objectSettings.personHeightCm} cm</b></label>
         </div>
         <label className={`stage3d-person-height ${objectSettings.peopleVisible ? "" : "disabled"}`}>
