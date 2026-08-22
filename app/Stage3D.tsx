@@ -25,6 +25,13 @@ type CameraPose = {
   target: [number, number, number];
 };
 
+type StageObjectSettings = {
+  peopleVisible: boolean;
+  personHeightCm: number;
+  backdrop158Visible: boolean;
+  backdrop202Visible: boolean;
+};
+
 const STAGE = {
   openingWidth: 15.42,
   openingHeight: 8.5,
@@ -41,6 +48,14 @@ const SCREEN_WIDTH = SIDE_LEG_INNER_EDGE * 2;
 const SCREEN_HEIGHT = SCREEN_WIDTH * 9 / 16;
 const DANCE_MAT_SEAM_SPACING = 0.92;
 const TEMPLATE_CAMERA_STORAGE_KEY = "stage-view-template-camera-v2";
+const STAGE_OBJECT_STORAGE_KEY = "stage-view-objects-v1";
+const PERSON_MODEL_HEIGHT = 1.7;
+const DEFAULT_OBJECT_SETTINGS: StageObjectSettings = {
+  peopleVisible: true,
+  personHeightCm: 172,
+  backdrop158Visible: true,
+  backdrop202Visible: true,
+};
 
 export type Stage3DHandle = {
   exportView: () => void;
@@ -73,6 +88,21 @@ function readTemplateCamera(): CameraPose | null {
     return { fov: value.fov, position: value.position, target: value.target };
   } catch {
     return null;
+  }
+}
+
+function readObjectSettings(): StageObjectSettings {
+  try {
+    const stored = JSON.parse(localStorage.getItem(STAGE_OBJECT_STORAGE_KEY) || "null") as Partial<StageObjectSettings> | null;
+    if (!stored) return DEFAULT_OBJECT_SETTINGS;
+    return {
+      peopleVisible: stored.peopleVisible ?? DEFAULT_OBJECT_SETTINGS.peopleVisible,
+      personHeightCm: Math.min(185, Math.max(158, Number(stored.personHeightCm) || DEFAULT_OBJECT_SETTINGS.personHeightCm)),
+      backdrop158Visible: stored.backdrop158Visible ?? DEFAULT_OBJECT_SETTINGS.backdrop158Visible,
+      backdrop202Visible: stored.backdrop202Visible ?? DEFAULT_OBJECT_SETTINGS.backdrop202Visible,
+    };
+  } catch {
+    return DEFAULT_OBJECT_SETTINGS;
   }
 }
 
@@ -119,13 +149,13 @@ function makeBox(
 
 function createPerson(material: THREE.Material, x: number, z: number, rotation = 0) {
   const group = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.18, 0.82, 5, 10), material);
-  body.position.y = 0.78;
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.18, 14, 10), material);
-  head.position.y = 1.48;
-  const legGeometry = new THREE.CylinderGeometry(0.055, 0.065, 0.75, 8);
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.18, 0.7, 5, 10), material);
+  body.position.y = 0.93;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.17, 14, 10), material);
+  head.position.y = 1.53;
+  const legGeometry = new THREE.CylinderGeometry(0.055, 0.065, 0.78, 8);
   const leftLeg = new THREE.Mesh(legGeometry, material);
-  leftLeg.position.set(-0.09, 0.18, 0);
+  leftLeg.position.set(-0.09, 0.39, 0);
   leftLeg.rotation.z = -0.05;
   const rightLeg = leftLeg.clone();
   rightLeg.position.x = 0.09;
@@ -136,6 +166,40 @@ function createPerson(material: THREE.Material, x: number, z: number, rotation =
   group.traverse((object) => {
     if (object instanceof THREE.Mesh) object.castShadow = true;
   });
+  return group;
+}
+
+function createBackdropPanel(
+  panelMaterial: THREE.Material,
+  frameMaterial: THREE.Material,
+  width: number,
+  height: number,
+  x: number,
+  z: number,
+  rotation: number,
+) {
+  const group = new THREE.Group();
+  const panel = new THREE.Mesh(new THREE.BoxGeometry(width, height, 0.08), panelMaterial);
+  panel.position.y = height / 2;
+  panel.castShadow = true;
+  panel.receiveShadow = true;
+  group.add(panel);
+
+  const sideGeometry = new THREE.BoxGeometry(0.045, height, 0.12);
+  const leftFrame = new THREE.Mesh(sideGeometry, frameMaterial);
+  leftFrame.position.set(-width / 2 + 0.0225, height / 2, 0);
+  leftFrame.castShadow = true;
+  const rightFrame = leftFrame.clone();
+  rightFrame.position.x = width / 2 - 0.0225;
+  const footGeometry = new THREE.BoxGeometry(0.28, 0.06, 0.48);
+  const leftFoot = new THREE.Mesh(footGeometry, frameMaterial);
+  leftFoot.position.set(-width * 0.32, 0.03, 0.08);
+  leftFoot.castShadow = true;
+  const rightFoot = leftFoot.clone();
+  rightFoot.position.x = width * 0.32;
+  group.add(leftFrame, rightFrame, leftFoot, rightFoot);
+  group.position.set(x, 0, z);
+  group.rotation.y = rotation;
   return group;
 }
 
@@ -177,8 +241,12 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
   const controlsRef = useRef<OrbitControls | null>(null);
   const screenMaterialRef = useRef<THREE.MeshBasicMaterial | null>(null);
   const textureRef = useRef<THREE.Texture | null>(null);
+  const peopleRef = useRef<THREE.Group[]>([]);
+  const backdrop158Ref = useRef<THREE.Group | null>(null);
+  const backdrop202Ref = useRef<THREE.Group | null>(null);
   const presetRef = useRef<PresetName>("模板視角");
   const [preset, setPreset] = useState<PresetName>("模板視角");
+  const [objectSettings, setObjectSettings] = useState<StageObjectSettings>(readObjectSettings);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -206,7 +274,6 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x070809);
-    scene.fog = new THREE.FogExp2(0x070809, 0.016);
 
     const startingCamera = readTemplateCamera() ?? TEMPLATE_CAMERA;
     const camera = new THREE.PerspectiveCamera(startingCamera.fov, 16 / 9, 0.1, 180);
@@ -248,6 +315,9 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
     const line = makeMaterial(0xc8c3ba, 0.82);
     const audienceFloor = makeMaterial(0x111113, 0.95);
     const personMaterial = makeMaterial(0x747678, 0.72, 0.05);
+    const backdrop158Material = makeMaterial(0x8d7769, 0.88);
+    const backdrop202Material = makeMaterial(0x697682, 0.86);
+    const backdropFrameMaterial = makeMaterial(0x2b2927, 0.65, 0.08);
 
     makeBox(scene, [46, 0.35, 36], [0, -1.05, -17], audienceFloor);
     makeBox(scene, [27, 0.24, STAGE.backWallDepth], [0, -0.12, STAGE.backWallDepth / 2], floor);
@@ -300,14 +370,30 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
       black,
     );
 
-    [
+    const people = [
       [-4.7, 2.7, -0.2],
       [-2.5, 5.1, 0.15],
       [0.2, 3.6, -0.1],
       [2.6, 6.1, 0.22],
       [4.8, 2.9, -0.18],
       [5.8, 7.3, 0.12],
-    ].forEach(([x, z, rotation]) => scene.add(createPerson(personMaterial, x, z, rotation)));
+    ].map(([x, z, rotation]) => createPerson(personMaterial, x, z, rotation));
+    people.forEach((person) => scene.add(person));
+    peopleRef.current = people;
+
+    const backdrop158 = createBackdropPanel(backdrop158Material, backdropFrameMaterial, 1.2, 1.58, -3.55, 6.55, -0.08);
+    const backdrop202 = createBackdropPanel(backdrop202Material, backdropFrameMaterial, 1.2, 2.02, 3.55, 6.55, 0.08);
+    backdrop158Ref.current = backdrop158;
+    backdrop202Ref.current = backdrop202;
+    scene.add(backdrop158, backdrop202);
+
+    const initialPersonScale = objectSettings.personHeightCm / 100 / PERSON_MODEL_HEIGHT;
+    people.forEach((person) => {
+      person.visible = objectSettings.peopleVisible;
+      person.scale.setScalar(initialPersonScale);
+    });
+    backdrop158.visible = objectSettings.backdrop158Visible;
+    backdrop202.visible = objectSettings.backdrop202Visible;
 
     const grid = new THREE.GridHelper(30, 30, 0x784a37, 0x292a2b);
     grid.position.y = -0.99;
@@ -350,8 +436,26 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
       cameraRef.current = null;
       controlsRef.current = null;
       screenMaterialRef.current = null;
+      peopleRef.current = [];
+      backdrop158Ref.current = null;
+      backdrop202Ref.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const personScale = objectSettings.personHeightCm / 100 / PERSON_MODEL_HEIGHT;
+    peopleRef.current.forEach((person) => {
+      person.visible = objectSettings.peopleVisible;
+      person.scale.setScalar(personScale);
+    });
+    if (backdrop158Ref.current) backdrop158Ref.current.visible = objectSettings.backdrop158Visible;
+    if (backdrop202Ref.current) backdrop202Ref.current.visible = objectSettings.backdrop202Visible;
+    try {
+      localStorage.setItem(STAGE_OBJECT_STORAGE_KEY, JSON.stringify(objectSettings));
+    } catch {
+      // The controls still work when browser storage is unavailable.
+    }
+  }, [objectSettings]);
 
   useEffect(() => {
     const material = screenMaterialRef.current;
@@ -433,6 +537,19 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
           <button key={name} className={preset === name ? "active" : ""} onClick={() => moveCamera(name)}>{name}</button>
         ))}
         <button className="reset-view" onClick={resetTemplateView}>重設模板</button>
+      </div>
+      <div className="stage3d-objects" aria-label="3D 物件控制">
+        <div className="stage3d-objects-title"><strong>3D 物件</strong><span>顯示／隱藏</span></div>
+        <div className="stage3d-object-toggles">
+          <label><input type="checkbox" checked={objectSettings.backdrop158Visible} onChange={(event) => setObjectSettings((current) => ({ ...current, backdrop158Visible: event.target.checked }))} /><span>背板</span><b>120 × 158 cm</b></label>
+          <label><input type="checkbox" checked={objectSettings.backdrop202Visible} onChange={(event) => setObjectSettings((current) => ({ ...current, backdrop202Visible: event.target.checked }))} /><span>背板</span><b>120 × 202 cm</b></label>
+          <label><input type="checkbox" checked={objectSettings.peopleVisible} onChange={(event) => setObjectSettings((current) => ({ ...current, peopleVisible: event.target.checked }))} /><span>人物</span><b>{objectSettings.personHeightCm} cm</b></label>
+        </div>
+        <label className={`stage3d-person-height ${objectSettings.peopleVisible ? "" : "disabled"}`}>
+          <span>人物身高</span>
+          <input type="range" min="158" max="185" step="1" disabled={!objectSettings.peopleVisible} value={objectSettings.personHeightCm} onChange={(event) => setObjectSettings((current) => ({ ...current, personHeightCm: Number(event.target.value) }))} />
+          <b>{objectSettings.personHeightCm} cm</b>
+        </label>
       </div>
       <div className="stage3d-help">
         <strong>{image ? image.name : "請先從左側選擇背景圖片"}</strong>
