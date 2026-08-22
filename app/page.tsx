@@ -34,6 +34,15 @@ const MAX_COMPARE = 4;
 const STAGE_CANVAS_WIDTH = 1920;
 const STAGE_CANVAS_HEIGHT = 1080;
 const STAGE_CANVAS_RATIO = STAGE_CANVAS_WIDTH / STAGE_CANVAS_HEIGHT;
+const TRANSPARENT_BOUNDS = { left: 343, top: 243, right: 1584, bottom: 934 };
+const PROJECTION_FRAME_WIDTH = TRANSPARENT_BOUNDS.right - TRANSPARENT_BOUNDS.left + 1;
+const PROJECTION_FRAME_HEIGHT = PROJECTION_FRAME_WIDTH / STAGE_CANVAS_RATIO;
+const PROJECTION_FRAME = {
+  left: ((TRANSPARENT_BOUNDS.left + TRANSPARENT_BOUNDS.right) / 2 - PROJECTION_FRAME_WIDTH / 2) / STAGE_CANVAS_WIDTH,
+  top: ((TRANSPARENT_BOUNDS.top + TRANSPARENT_BOUNDS.bottom) / 2 - PROJECTION_FRAME_HEIGHT / 2) / STAGE_CANVAS_HEIGHT,
+  width: PROJECTION_FRAME_WIDTH / STAGE_CANVAS_WIDTH,
+  height: PROJECTION_FRAME_HEIGHT / STAGE_CANVAS_HEIGHT,
+};
 const STAGE_OVERLAY_URL = `${import.meta.env.BASE_URL}stage-overlay.png`;
 
 function openLibrary() {
@@ -151,14 +160,18 @@ function drawStageToContext(
 ) {
   context.fillStyle = "#000";
   context.fillRect(x, y, canvasWidth, canvasHeight);
+  const projectionX = x + canvasWidth * PROJECTION_FRAME.left;
+  const projectionY = y + canvasHeight * PROJECTION_FRAME.top;
+  const projectionWidth = canvasWidth * PROJECTION_FRAME.width;
+  const projectionHeight = canvasHeight * PROJECTION_FRAME.height;
   const baseScale = image.transform.fit === "cover"
-    ? Math.max(canvasWidth / background.naturalWidth, canvasHeight / background.naturalHeight)
-    : Math.min(canvasWidth / background.naturalWidth, canvasHeight / background.naturalHeight);
+    ? Math.max(projectionWidth / background.naturalWidth, projectionHeight / background.naturalHeight)
+    : Math.min(projectionWidth / background.naturalWidth, projectionHeight / background.naturalHeight);
   const scale = baseScale * (image.transform.scale / 100);
   const width = background.naturalWidth * scale;
   const height = background.naturalHeight * scale;
-  const imageX = x + (canvasWidth - width) / 2 + (image.transform.x / 100) * canvasWidth;
-  const imageY = y + (canvasHeight - height) / 2 + (image.transform.y / 100) * canvasHeight;
+  const imageX = projectionX + (projectionWidth - width) / 2 + (image.transform.x / 100) * canvasWidth;
+  const imageY = projectionY + (projectionHeight - height) / 2 + (image.transform.y / 100) * canvasHeight;
   context.save();
   context.beginPath();
   context.rect(x, y, canvasWidth, canvasHeight);
@@ -250,9 +263,13 @@ function StageCanvas({
         alt={image.name}
         draggable={false}
         style={{
+          left: `${PROJECTION_FRAME.left * 100}%`,
+          top: `${PROJECTION_FRAME.top * 100}%`,
+          width: `${PROJECTION_FRAME.width * 100}%`,
+          height: `${PROJECTION_FRAME.height * 100}%`,
           objectFit: image.transform.fit,
           filter: `brightness(${image.transform.brightness}%)`,
-          transform: `translate3d(${image.transform.x}%, ${image.transform.y}%, 0) scale(${image.transform.scale / 100})`,
+          transform: `translate3d(${image.transform.x / PROJECTION_FRAME.width}%, ${image.transform.y / PROJECTION_FRAME.height}%, 0) scale(${image.transform.scale / 100})`,
         }}
       />
       <img className="stage-overlay" src={STAGE_OVERLAY_URL} alt="劇場舞台比例模擬框" draggable={false} />

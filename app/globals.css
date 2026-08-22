@@ -113,7 +113,7 @@ h3 { font-size: 18px; }
 .stage-canvas.fits-container { width: 1px; height: 1px; max-width: none; max-height: none; aspect-ratio: auto; flex: none; }
 .stage-canvas.is-interactive { cursor: grab; }
 .stage-canvas.is-interactive:active { cursor: grabbing; }
-.background-image { position: absolute; inset: 0; width: 100%; height: 100%; user-select: none; transform-origin: center; will-change: transform, filter; }
+.background-image { position: absolute; user-select: none; transform-origin: center; will-change: transform, filter; }
 .stage-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; user-select: none; z-index: 2; }
 .empty-stage { width: min(620px, 75%); aspect-ratio: 1.9; border: 1px dashed #6c6862; background: #191919; color: #eee; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; }
 .empty-stage span { width: 40px; height: 40px; display: grid; place-items: center; background: #292725; border-radius: 50%; font-size: 27px; color: #dc7353; }
