@@ -132,6 +132,10 @@ function makeMaterial(color: number, roughness = 0.78, metalness = 0.02) {
   return new THREE.MeshStandardMaterial({ color, roughness, metalness });
 }
 
+function makeUnlitMaterial(color: number) {
+  return new THREE.MeshBasicMaterial({ color, toneMapped: false });
+}
+
 function makeBox(
   scene: THREE.Scene,
   size: [number, number, number],
@@ -189,8 +193,8 @@ function createBackdropPanel(
   const group = new THREE.Group();
   const panel = new THREE.Mesh(new THREE.BoxGeometry(width, height, 0.08), panelMaterial);
   panel.position.y = height / 2;
-  panel.castShadow = true;
-  panel.receiveShadow = true;
+  panel.castShadow = false;
+  panel.receiveShadow = false;
   group.add(panel);
 
   const sideGeometry = new THREE.BoxGeometry(0.045, height, 0.12);
@@ -329,8 +333,8 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
     const line = makeMaterial(0xc8c3ba, 0.82);
     const audienceFloor = makeMaterial(0x111113, 0.95);
     const personMaterial = makeMaterial(0x747678, 0.72, 0.05);
-    const backdrop252Material = makeMaterial(0x765548, 0.88);
-    const backdrop202Material = makeMaterial(0x5f4940, 0.86);
+    const backdrop252Material = makeUnlitMaterial(0x765548);
+    const backdrop202Material = makeUnlitMaterial(0x5f4940);
     const backdropFrameMaterial = makeMaterial(0x2b2927, 0.65, 0.08);
 
     makeBox(scene, [46, 0.35, 36], [0, -1.05, -17], audienceFloor);
