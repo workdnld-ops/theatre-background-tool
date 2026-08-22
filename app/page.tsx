@@ -31,6 +31,9 @@ const CATEGORY_STORE_NAME = "categories";
 const OFFLINE_DISABLED_KEY = "stage-view-offline-disabled";
 const DEFAULT_TRANSFORM: Transform = { scale: 100, x: 0, y: 0, brightness: 100, fit: "cover" };
 const MAX_COMPARE = 4;
+const STAGE_CANVAS_WIDTH = 1920;
+const STAGE_CANVAS_HEIGHT = 1080;
+const STAGE_CANVAS_RATIO = STAGE_CANVAS_WIDTH / STAGE_CANVAS_HEIGHT;
 const STAGE_OVERLAY_URL = `${import.meta.env.BASE_URL}stage-overlay.png`;
 
 function openLibrary() {
@@ -194,7 +197,7 @@ function StageCanvas({
     const parent = canvas?.parentElement;
     if (!parent) return;
     const container: HTMLElement = parent;
-    const ratio = 1798 / 1008;
+    const ratio = STAGE_CANVAS_RATIO;
 
     function measure() {
       const style = window.getComputedStyle(container);
@@ -646,8 +649,8 @@ export default function Home() {
   async function exportComposite(image: LibraryImage) {
     const [background, overlay] = await Promise.all([loadHtmlImage(image.url), loadHtmlImage(STAGE_OVERLAY_URL)]);
     const canvas = document.createElement("canvas");
-    canvas.width = 1798;
-    canvas.height = 1008;
+    canvas.width = STAGE_CANVAS_WIDTH;
+    canvas.height = STAGE_CANVAS_HEIGHT;
     const context = canvas.getContext("2d");
     if (!context) return;
     drawStageToContext(context, image, background, overlay, 0, 0, canvas.width, canvas.height);
@@ -665,7 +668,7 @@ export default function Home() {
     const columns = comparedImages.length === 1 ? 1 : 2;
     const rows = Math.ceil(comparedImages.length / columns);
     const tileWidth = 1200;
-    const stageHeight = Math.round(tileWidth * 1008 / 1798);
+    const stageHeight = Math.round(tileWidth / STAGE_CANVAS_RATIO);
     const metaHeight = 86;
     const gap = 24;
     const padding = 32;
