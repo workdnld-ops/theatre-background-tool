@@ -331,13 +331,11 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
     const apron = makeMaterial(0x3c241b, 0.9);
     const frame = makeMaterial(0xaaa5ba, 0.35, 0.2);
     const line = makeMaterial(0xc8c3ba, 0.82);
-    const audienceFloor = makeMaterial(0x111113, 0.95);
     const personMaterial = makeMaterial(0x747678, 0.72, 0.05);
     const backdrop252Material = makeUnlitMaterial(0x765548);
     const backdrop202Material = makeUnlitMaterial(0x5f4940);
     const backdropFrameMaterial = makeMaterial(0x2b2927, 0.65, 0.08);
 
-    makeBox(scene, [46, 0.35, 36], [0, -1.05, -17], audienceFloor);
     makeBox(scene, [27, 0.24, STAGE.backWallDepth], [0, -0.12, STAGE.backWallDepth / 2], floor);
 
     const apronShape = new THREE.Shape();
@@ -412,11 +410,6 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
     });
     backdrop252.visible = objectSettings.backdrop252Visible;
     backdrop202.visible = objectSettings.backdrop202Visible;
-
-    const grid = new THREE.GridHelper(30, 30, 0x784a37, 0x292a2b);
-    grid.position.y = -0.99;
-    grid.position.z = -16;
-    scene.add(grid);
 
     const resizeObserver = new ResizeObserver(() => {
       const availableWidth = Math.max(1, mount.clientWidth);
