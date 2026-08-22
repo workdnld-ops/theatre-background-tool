@@ -41,13 +41,15 @@ const STAGE = {
   stageHeight: 0.88,
 };
 
-const SIDE_LEG_INNER_EDGE = 5.65;
-const SIDE_LEG_WIDTH = 2.15;
+// The reference photos show the 16:9 projection occupying about 86% of the
+// 15.42 m proscenium opening. The last side legs meet the projection edges.
+const SIDE_LEG_INNER_EDGE = 6.6;
+const SIDE_LEG_WIDTH = STAGE.openingWidth / 2 - SIDE_LEG_INNER_EDGE;
 const SIDE_LEG_DEPTHS = [1.1, 3.05, 5.0, 6.95, 8.9];
 const SCREEN_WIDTH = SIDE_LEG_INNER_EDGE * 2;
 const SCREEN_HEIGHT = SCREEN_WIDTH * 9 / 16;
 const DANCE_MAT_SEAM_SPACING = 0.92;
-const TEMPLATE_CAMERA_STORAGE_KEY = "stage-view-template-camera-v2";
+const TEMPLATE_CAMERA_STORAGE_KEY = "stage-view-template-camera-v3";
 const STAGE_OBJECT_STORAGE_KEY = "stage-view-objects-v1";
 const PERSON_MODEL_HEIGHT = 1.7;
 const DEFAULT_OBJECT_SETTINGS: StageObjectSettings = {
@@ -61,13 +63,12 @@ export type Stage3DHandle = {
   exportView: () => void;
 };
 
-// Calibrated against 快速模擬2.png (1920 × 1080). Its transparent projection
-// area occupies approximately x 343–1584 and y 243–934. Keeping this camera
-// and the renderer at 16:9 makes the projected plane line up with that mask.
+// Long-lens audience view matching the frontal proportions in 參考圖1 while
+// keeping the renderer at the same 16:9 export ratio as the projected image.
 const TEMPLATE_CAMERA: CameraPose = {
-  fov: 10.27,
-  position: [0, 0.8, -45],
-  target: [0, 3.43, 7],
+  fov: 20,
+  position: [0, 1.25, -22],
+  target: [0, 3.5, 7],
 };
 
 function fitSixteenByNine(width: number, height: number) {
@@ -149,10 +150,10 @@ function makeBox(
 
 function createPerson(material: THREE.Material, x: number, z: number, rotation = 0) {
   const group = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.18, 0.7, 5, 10), material);
-  body.position.y = 0.93;
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.17, 14, 10), material);
-  head.position.y = 1.53;
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.68, 5, 10), material);
+  body.position.y = 0.98;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.16, 14, 10), material);
+  head.position.y = 1.54;
   const legGeometry = new THREE.CylinderGeometry(0.055, 0.065, 0.78, 8);
   const leftLeg = new THREE.Mesh(legGeometry, material);
   leftLeg.position.set(-0.09, 0.39, 0);
@@ -160,7 +161,14 @@ function createPerson(material: THREE.Material, x: number, z: number, rotation =
   const rightLeg = leftLeg.clone();
   rightLeg.position.x = 0.09;
   rightLeg.rotation.z = 0.05;
-  group.add(body, head, leftLeg, rightLeg);
+  const armGeometry = new THREE.CylinderGeometry(0.055, 0.07, 0.68, 8);
+  const leftArm = new THREE.Mesh(armGeometry, material);
+  leftArm.position.set(-0.255, 1.04, 0);
+  leftArm.rotation.z = -0.08;
+  const rightArm = leftArm.clone();
+  rightArm.position.x = 0.255;
+  rightArm.rotation.z = 0.08;
+  group.add(body, head, leftLeg, rightLeg, leftArm, rightArm);
   group.position.set(x, 0, z);
   group.rotation.y = rotation;
   group.traverse((object) => {
@@ -197,7 +205,13 @@ function createBackdropPanel(
   leftFoot.castShadow = true;
   const rightFoot = leftFoot.clone();
   rightFoot.position.x = width * 0.32;
-  group.add(leftFrame, rightFrame, leftFoot, rightFoot);
+  const wheelGeometry = new THREE.CylinderGeometry(0.045, 0.045, 0.035, 10);
+  const leftWheel = new THREE.Mesh(wheelGeometry, frameMaterial);
+  leftWheel.position.set(-width * 0.32, 0.045, 0.18);
+  leftWheel.rotation.x = Math.PI / 2;
+  const rightWheel = leftWheel.clone();
+  rightWheel.position.x = width * 0.32;
+  group.add(leftFrame, rightFrame, leftFoot, rightFoot, leftWheel, rightWheel);
   group.position.set(x, 0, z);
   group.rotation.y = rotation;
   return group;
@@ -315,8 +329,8 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
     const line = makeMaterial(0xc8c3ba, 0.82);
     const audienceFloor = makeMaterial(0x111113, 0.95);
     const personMaterial = makeMaterial(0x747678, 0.72, 0.05);
-    const backdrop158Material = makeMaterial(0x8d7769, 0.88);
-    const backdrop202Material = makeMaterial(0x697682, 0.86);
+    const backdrop158Material = makeMaterial(0x765548, 0.88);
+    const backdrop202Material = makeMaterial(0x5f4940, 0.86);
     const backdropFrameMaterial = makeMaterial(0x2b2927, 0.65, 0.08);
 
     makeBox(scene, [46, 0.35, 36], [0, -1.05, -17], audienceFloor);
@@ -371,18 +385,18 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
     );
 
     const people = [
-      [-4.7, 2.7, -0.2],
-      [-2.5, 5.1, 0.15],
-      [0.2, 3.6, -0.1],
-      [2.6, 6.1, 0.22],
-      [4.8, 2.9, -0.18],
-      [5.8, 7.3, 0.12],
+      [-5.0, 3.2, -0.18],
+      [-4.15, 5.8, 0.12],
+      [-1.25, 4.2, -0.08],
+      [1.25, 4.2, 0.08],
+      [4.15, 5.8, -0.12],
+      [5.0, 3.2, 0.18],
     ].map(([x, z, rotation]) => createPerson(personMaterial, x, z, rotation));
     people.forEach((person) => scene.add(person));
     peopleRef.current = people;
 
-    const backdrop158 = createBackdropPanel(backdrop158Material, backdropFrameMaterial, 1.2, 1.58, -3.55, 6.55, -0.08);
-    const backdrop202 = createBackdropPanel(backdrop202Material, backdropFrameMaterial, 1.2, 2.02, 3.55, 6.55, 0.08);
+    const backdrop158 = createBackdropPanel(backdrop158Material, backdropFrameMaterial, 1.2, 1.58, -2.9, 5.8, -0.06);
+    const backdrop202 = createBackdropPanel(backdrop202Material, backdropFrameMaterial, 1.2, 2.02, 2.9, 5.8, 0.06);
     backdrop158Ref.current = backdrop158;
     backdrop202Ref.current = backdrop202;
     scene.add(backdrop158, backdrop202);
@@ -528,9 +542,9 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
       <div className="stage3d-badges">
         <span>鏡框 15.42 × 8.50 m</span>
         <span>天幕深度 10.65 m</span>
-        <span>投影 11.30 × 6.36 m・16:9</span>
+        <span>投影 13.20 × 7.43 m・16:9</span>
         <span>地墊接縫間距 0.92 m</span>
-        <span className="prototype">影片校正版 V3</span>
+        <span className="prototype">參考照片校正版 V4</span>
       </div>
       <div className="stage3d-presets" aria-label="3D 預設視角">
         {(["模板視角", "前排", "左側", "右側", "俯視"] as PresetName[]).map((name) => (
