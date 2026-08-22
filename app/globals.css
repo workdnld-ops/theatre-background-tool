@@ -99,14 +99,18 @@ h3 { font-size: 18px; }
 
 .stage-panel { min-width: 0; min-height: 0; padding: 20px 26px 24px; display: flex; flex-direction: column; overflow: hidden; }
 .stage-toolbar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.stage-toolbar-controls { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.mode-actions { display: flex; align-items: center; gap: 5px; }
+.mode-actions button { border: 1px solid #d3cbc1; border-radius: 8px; padding: 7px 11px; background: #fffefa; color: #625a52; font-size: 10px; font-weight: 800; white-space: nowrap; }
+.mode-actions button:hover { border-color: #c39a8b; background: #fff7f1; }
+.mode-actions button.export-action { border-color: var(--accent); background: var(--accent); color: white; }
+.mode-actions button.export-action:hover { background: #e26740; }
+.mode-actions button.clear-action { color: #9d422d; }
+.mode-actions button:disabled { opacity: .4; cursor: default; }
 .view-tabs { display: flex; background: #e7e2da; padding: 3px; border-radius: 9px; }
 .view-tabs button { border: 0; background: transparent; border-radius: 7px; padding: 7px 13px; color: #766d64; font-size: 11px; font-weight: 800; }
 .view-tabs button.active { background: white; color: var(--ink); box-shadow: 0 1px 4px #bcb5aa88; }
 .view-tabs b { min-width: 15px; display: inline-grid; place-items: center; background: var(--accent); color: white; border-radius: 999px; font-size: 8px; margin-left: 3px; }
-.view-tabs .clear-compare { margin-left: 3px; color: #9d422d; }
-.view-tabs .clear-compare:disabled { opacity: .4; cursor: default; }
-.view-tabs .export-compare { margin-left: 3px; background: var(--accent); color: white; }
-.view-tabs .export-compare:disabled { opacity: .4; cursor: default; }
 .single-view { min-height: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 .canvas-wrap { min-height: 0; flex: 1 1 0; background: #242321; border-radius: 14px; padding: clamp(8px, 1.5vw, 18px); display: grid; place-items: center; box-shadow: inset 0 0 0 1px #ffffff12; overflow: hidden; }
 .stage-canvas { position: relative; width: min(100%, 1120px); aspect-ratio: 16/9; overflow: hidden; background: #050505; box-shadow: 0 15px 40px #0008; touch-action: none; }
@@ -129,7 +133,6 @@ h3 { font-size: 18px; }
 .fit-control > div { display: flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
 .fit-control button { border: 0; background: #f2eee7; color: #726960; padding: 5px 9px; font-size: 10px; font-weight: 700; }
 .fit-control button.active { background: #4a443e; color: white; }
-.export-button { padding-inline: 16px; }
 .note-row { display: grid; grid-template-columns: auto minmax(100px, .55fr) auto minmax(160px, 1fr) auto; align-items: center; gap: 9px; margin-top: 9px; padding-top: 9px; border-top: 1px solid #ece7de; }
 .note-row select { min-width: 0; height: 30px; border: 1px solid var(--line); background: #faf8f4; border-radius: 7px; padding: 0 9px; font-size: 11px; color: var(--ink); }
 .note-row > span { color: #968b80; font-size: 9px; }
@@ -168,7 +171,6 @@ h3 { font-size: 18px; }
 .stage3d-presets button.active { background: #f1ece4; color: #25211e; }
 .stage3d-presets button.reset-view { color: #dfb6a7; }
 .stage3d-presets button.reset-view:hover { background: #a9503838; color: #ffd4c5; }
-.stage3d-presets button.export { margin-left: 3px; background: var(--accent); color: white; }
 .stage3d-help { position: absolute; z-index: 2; left: 14px; bottom: 14px; max-width: calc(100% - 28px); display: flex; align-items: center; gap: 10px; padding: 8px 11px; border: 1px solid #ffffff17; border-radius: 9px; background: #111315d9; color: white; box-shadow: 0 5px 18px #0005; pointer-events: none; backdrop-filter: blur(7px); }
 .stage3d-help strong { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
 .stage3d-help span { color: #9d9b97; font-size: 9px; }
@@ -201,6 +203,8 @@ h3 { font-size: 18px; }
   .note-row > span { display: none; }
   .stage3d-badges span:not(.prototype) { display: none; }
   .stage3d-presets button { padding-inline: 7px; }
+  .stage-toolbar { align-items: flex-start; gap: 8px; }
+  .stage-toolbar-controls { flex-wrap: wrap; justify-content: flex-end; }
 }
 
 @media (max-width: 720px) {
@@ -213,6 +217,9 @@ h3 { font-size: 18px; }
   .workspace { height: auto; min-height: calc(100vh - 72px); grid-template-columns: 1fr; }
   .sidebar { min-height: 330px; max-height: 48vh; border-right: 0; border-bottom: 1px solid var(--line); }
   .stage-panel { min-height: 620px; }
+  .stage-toolbar { flex-wrap: wrap; }
+  .stage-toolbar-controls { width: 100%; justify-content: space-between; }
+  .view-tabs button { padding-inline: 9px; }
   .canvas-wrap { min-height: 300px; padding: 8px; }
   .compare-grid { grid-template-columns: 1fr; }
   .stage3d-shell { min-height: 520px; }

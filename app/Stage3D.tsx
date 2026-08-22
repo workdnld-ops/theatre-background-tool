@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
@@ -39,8 +39,12 @@ const SIDE_LEG_WIDTH = 2.15;
 const SIDE_LEG_DEPTHS = [1.1, 3.05, 5.0, 6.95, 8.9];
 const SCREEN_WIDTH = SIDE_LEG_INNER_EDGE * 2;
 const SCREEN_HEIGHT = SCREEN_WIDTH * 9 / 16;
-const FLOOR_LINE_COUNT = 13;
+const DANCE_MAT_SEAM_SPACING = 0.92;
 const TEMPLATE_CAMERA_STORAGE_KEY = "stage-view-template-camera-v2";
+
+export type Stage3DHandle = {
+  exportView: () => void;
+};
 
 // Calibrated against 快速模擬2.png (1920 × 1080). Its transparent projection
 // area occupies approximately x 343–1584 and y 243–934. Keeping this camera
@@ -166,7 +170,7 @@ function renderProjectionTexture(image: ProjectionImage) {
   });
 }
 
-export default function Stage3D({ image }: { image: ProjectionImage | null }) {
+const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(function Stage3D({ image }, ref) {
   const mountRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -258,12 +262,11 @@ export default function Stage3D({ image }: { image: ProjectionImage | null }) {
     apronMesh.receiveShadow = true;
     scene.add(apronMesh);
 
-    const lineSpan = STAGE.openingWidth - 0.45;
-    for (let index = 0; index < FLOOR_LINE_COUNT; index += 1) {
-      const x = -lineSpan / 2 + index * lineSpan / (FLOOR_LINE_COUNT - 1);
-      makeBox(scene, [0.045, 0.025, STAGE.backWallDepth], [x, 0.02, STAGE.backWallDepth / 2], line, false, false);
+    const floorSeamCount = Math.floor(STAGE.backWallDepth / DANCE_MAT_SEAM_SPACING);
+    for (let index = 1; index <= floorSeamCount; index += 1) {
+      const z = index * DANCE_MAT_SEAM_SPACING;
+      makeBox(scene, [27, 0.025, 0.035], [0, 0.02, z], line, false, false);
     }
-    makeBox(scene, [0.04, 0.025, STAGE.apronDepth], [0, -0.01, -STAGE.apronDepth / 2], line, false, false);
 
     makeBox(scene, [0.58, 9.5, 1.05], [-8.0, 4.55, -0.05], black);
     makeBox(scene, [0.58, 9.5, 1.05], [8.0, 4.55, -0.05], black);
@@ -412,6 +415,8 @@ export default function Stage3D({ image }: { image: ProjectionImage | null }) {
     link.click();
   }
 
+  useImperativeHandle(ref, () => ({ exportView }), [image]);
+
   return (
     <div className="stage3d-shell">
       <div ref={mountRef} className="stage3d-canvas" aria-label="臺中市港區藝術中心 3D 舞台預覽" />
@@ -420,14 +425,14 @@ export default function Stage3D({ image }: { image: ProjectionImage | null }) {
         <span>鏡框 15.42 × 8.50 m</span>
         <span>天幕深度 10.65 m</span>
         <span>投影 11.30 × 6.36 m・16:9</span>
-        <span className="prototype">影片校正版 V2</span>
+        <span>地墊接縫間距 0.92 m</span>
+        <span className="prototype">影片校正版 V3</span>
       </div>
       <div className="stage3d-presets" aria-label="3D 預設視角">
         {(["模板視角", "前排", "左側", "右側", "俯視"] as PresetName[]).map((name) => (
           <button key={name} className={preset === name ? "active" : ""} onClick={() => moveCamera(name)}>{name}</button>
         ))}
         <button className="reset-view" onClick={resetTemplateView}>重設模板</button>
-        <button className="export" onClick={exportView}>↓ 匯出視角</button>
       </div>
       <div className="stage3d-help">
         <strong>{image ? image.name : "請先從左側選擇背景圖片"}</strong>
@@ -435,4 +440,6 @@ export default function Stage3D({ image }: { image: ProjectionImage | null }) {
       </div>
     </div>
   );
-}
+});
+
+export default Stage3D;

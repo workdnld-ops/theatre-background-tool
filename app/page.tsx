@@ -2,7 +2,7 @@
 
 import { PointerEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { registerSW } from "virtual:pwa-register";
-import Stage3D from "./Stage3D";
+import Stage3D, { type Stage3DHandle } from "./Stage3D";
 
 type ViewMode = "single" | "compare" | "threeD";
 type FitMode = "cover" | "contain";
@@ -356,6 +356,7 @@ export default function Home() {
   const [offlineState, setOfflineState] = useState<OfflineState>(() => localStorage.getItem(OFFLINE_DISABLED_KEY) === "1" ? "disabled" : navigator.onLine ? "preparing" : "offline");
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const stage3DRef = useRef<Stage3DHandle>(null);
   const urlsRef = useRef<string[]>([]);
 
   useEffect(() => {
@@ -892,12 +893,20 @@ export default function Home() {
         <section className="stage-panel">
           <div className="stage-toolbar">
             <div><p className="eyebrow">PREVIEW</p><h2>{viewMode === "single" ? "舞台預覽" : viewMode === "compare" ? `比較背景（${comparedImages.length}/${MAX_COMPARE}）` : "3D 舞台預覽"}</h2></div>
-            <div className="view-tabs">
-              <button className={viewMode === "single" ? "active" : ""} onClick={() => setViewMode("single")}>單張調整</button>
-              <button className={viewMode === "compare" ? "active" : ""} onClick={() => setViewMode("compare")}>並排比較 <b>{compareIds.length || ""}</b></button>
-              <button className={viewMode === "threeD" ? "active" : ""} onClick={() => setViewMode("threeD")}>3D 舞台</button>
-              {viewMode === "compare" && <button className="clear-compare" disabled={!compareIds.length} onClick={() => { setCompareIds([]); showToast("已清空比較選擇。"); }}>清空重選</button>}
-              {viewMode === "compare" && <button className="export-compare" disabled={!comparedImages.length} onClick={() => void exportComparison()}>↓ 匯出比較圖</button>}
+            <div className="stage-toolbar-controls">
+              <div className="mode-actions">
+                {viewMode === "single" && <button className="export-action" disabled={!activeImage} onClick={() => activeImage && void exportComposite(activeImage)}>↓ 匯出 PNG</button>}
+                {viewMode === "compare" && <>
+                  <button className="clear-action" disabled={!compareIds.length} onClick={() => { setCompareIds([]); showToast("已清空比較選擇。"); }}>清空重選</button>
+                  <button className="export-action" disabled={!comparedImages.length} onClick={() => void exportComparison()}>↓ 匯出比較圖</button>
+                </>}
+                {viewMode === "threeD" && <button className="export-action" onClick={() => stage3DRef.current?.exportView()}>↓ 匯出視角</button>}
+              </div>
+              <div className="view-tabs">
+                <button className={viewMode === "single" ? "active" : ""} onClick={() => setViewMode("single")}>單張調整</button>
+                <button className={viewMode === "compare" ? "active" : ""} onClick={() => setViewMode("compare")}>並排比較 <b>{compareIds.length || ""}</b></button>
+                <button className={viewMode === "threeD" ? "active" : ""} onClick={() => setViewMode("threeD")}>3D 舞台</button>
+              </div>
             </div>
           </div>
 
@@ -920,7 +929,6 @@ export default function Home() {
                     <div className="range-control"><label>亮度 <b>{activeImage.transform.brightness}%</b></label><input type="range" min="30" max="140" value={activeImage.transform.brightness} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, brightness: Number(e.target.value) })} /></div>
                     <div className="fit-control"><label>填滿方式</label><div><button className={activeImage.transform.fit === "cover" ? "active" : ""} onClick={() => updateTransform(activeImage.id, { ...activeImage.transform, fit: "cover" })}>填滿</button><button className={activeImage.transform.fit === "contain" ? "active" : ""} onClick={() => updateTransform(activeImage.id, { ...activeImage.transform, fit: "contain" })}>完整</button></div></div>
                     <button className="secondary" onClick={resetActive}>重設</button>
-                    <button className="primary export-button" onClick={() => void exportComposite(activeImage)}>↓ 匯出 PNG</button>
                   </div>
                   <div className="note-row">
                     <label htmlFor="image-category">圖片分類</label>
@@ -981,7 +989,7 @@ export default function Home() {
               )}
             </div>
           ) : (
-            <Stage3D image={activeImage} />
+            <Stage3D ref={stage3DRef} image={activeImage} />
           )}
         </section>
       </section>
