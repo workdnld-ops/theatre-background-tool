@@ -19,6 +19,12 @@ type ProjectionImage = {
 
 type PresetName = "模板視角" | "前排" | "左側" | "右側" | "俯視";
 
+type CameraPose = {
+  fov: number;
+  position: [number, number, number];
+  target: [number, number, number];
+};
+
 const STAGE = {
   openingWidth: 15.42,
   openingHeight: 8.5,
@@ -28,22 +34,63 @@ const STAGE = {
   stageHeight: 0.88,
 };
 
-const SCREEN_HEIGHT = STAGE.openingHeight;
-const SCREEN_WIDTH = SCREEN_HEIGHT * 16 / 9;
+const SIDE_LEG_INNER_EDGE = 5.65;
+const SIDE_LEG_WIDTH = 2.15;
+const SIDE_LEG_DEPTHS = [1.1, 3.05, 5.0, 6.95, 8.9];
+const SCREEN_WIDTH = SIDE_LEG_INNER_EDGE * 2;
+const SCREEN_HEIGHT = SCREEN_WIDTH * 9 / 16;
+const FLOOR_LINE_COUNT = 13;
+const TEMPLATE_CAMERA_STORAGE_KEY = "stage-view-template-camera-v2";
 
 // Calibrated against 快速模擬2.png (1920 × 1080). Its transparent projection
 // area occupies approximately x 343–1584 and y 243–934. Keeping this camera
 // and the renderer at 16:9 makes the projected plane line up with that mask.
-const TEMPLATE_CAMERA = {
-  fov: 25.9,
-  position: [0, 1.13, -18.25] as [number, number, number],
-  target: [0, 4.25, 6.5] as [number, number, number],
+const TEMPLATE_CAMERA: CameraPose = {
+  fov: 10.27,
+  position: [0, 0.8, -45],
+  target: [0, 3.43, 7],
 };
 
 function fitSixteenByNine(width: number, height: number) {
   const aspect = 16 / 9;
   if (width / Math.max(1, height) > aspect) return { width: height * aspect, height };
   return { width, height: width / aspect };
+}
+
+function isVectorTuple(value: unknown): value is [number, number, number] {
+  return Array.isArray(value) && value.length === 3 && value.every((item) => typeof item === "number" && Number.isFinite(item));
+}
+
+function readTemplateCamera(): CameraPose | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(TEMPLATE_CAMERA_STORAGE_KEY) || "null") as Partial<CameraPose> | null;
+    if (!value || typeof value.fov !== "number" || value.fov < 5 || value.fov > 90) return null;
+    if (!isVectorTuple(value.position) || !isVectorTuple(value.target)) return null;
+    return { fov: value.fov, position: value.position, target: value.target };
+  } catch {
+    return null;
+  }
+}
+
+function writeTemplateCamera(camera: THREE.PerspectiveCamera, controls: OrbitControls) {
+  const pose: CameraPose = {
+    fov: camera.fov,
+    position: camera.position.toArray() as [number, number, number],
+    target: controls.target.toArray() as [number, number, number],
+  };
+  try {
+    localStorage.setItem(TEMPLATE_CAMERA_STORAGE_KEY, JSON.stringify(pose));
+  } catch {
+    // The view still works when browser storage is unavailable.
+  }
+}
+
+function applyCameraPose(camera: THREE.PerspectiveCamera, controls: OrbitControls, pose: CameraPose) {
+  camera.fov = pose.fov;
+  camera.position.set(...pose.position);
+  controls.target.set(...pose.target);
+  camera.updateProjectionMatrix();
+  controls.update();
 }
 
 function makeMaterial(color: number, roughness = 0.78, metalness = 0.02) {
@@ -126,6 +173,7 @@ export default function Stage3D({ image }: { image: ProjectionImage | null }) {
   const controlsRef = useRef<OrbitControls | null>(null);
   const screenMaterialRef = useRef<THREE.MeshBasicMaterial | null>(null);
   const textureRef = useRef<THREE.Texture | null>(null);
+  const presetRef = useRef<PresetName>("模板視角");
   const [preset, setPreset] = useState<PresetName>("模板視角");
   const [error, setError] = useState("");
 
@@ -156,18 +204,26 @@ export default function Stage3D({ image }: { image: ProjectionImage | null }) {
     scene.background = new THREE.Color(0x070809);
     scene.fog = new THREE.FogExp2(0x070809, 0.016);
 
-    const camera = new THREE.PerspectiveCamera(TEMPLATE_CAMERA.fov, 16 / 9, 0.1, 100);
-    camera.position.set(...TEMPLATE_CAMERA.position);
+    const startingCamera = readTemplateCamera() ?? TEMPLATE_CAMERA;
+    const camera = new THREE.PerspectiveCamera(startingCamera.fov, 16 / 9, 0.1, 180);
+    camera.position.set(...startingCamera.position);
     cameraRef.current = camera;
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.07;
-    controls.target.set(...TEMPLATE_CAMERA.target);
+    controls.target.set(...startingCamera.target);
     controls.minDistance = 2.5;
-    controls.maxDistance = 48;
+    controls.maxDistance = 140;
     controls.maxPolarAngle = Math.PI * 0.92;
     controlsRef.current = controls;
+
+    const rememberManualView = () => {
+      writeTemplateCamera(camera, controls);
+      presetRef.current = "模板視角";
+      setPreset("模板視角");
+    };
+    controls.addEventListener("end", rememberManualView);
 
     scene.add(new THREE.HemisphereLight(0x9cb5ca, 0x19120f, 1.1));
     const keyLight = new THREE.SpotLight(0xffe4c5, 760, 52, Math.PI / 4.5, 0.42, 1.4);
@@ -190,12 +246,24 @@ export default function Stage3D({ image }: { image: ProjectionImage | null }) {
     const personMaterial = makeMaterial(0x747678, 0.72, 0.05);
 
     makeBox(scene, [46, 0.35, 36], [0, -1.05, -17], audienceFloor);
-    makeBox(scene, [27, 0.24, STAGE.backWallDepth + STAGE.apronDepth], [0, -0.12, (STAGE.backWallDepth - STAGE.apronDepth) / 2], floor);
-    makeBox(scene, [18.2, 0.3, STAGE.apronDepth], [0, -0.15, -STAGE.apronDepth / 2], apron);
+    makeBox(scene, [27, 0.24, STAGE.backWallDepth], [0, -0.12, STAGE.backWallDepth / 2], floor);
 
-    for (let z = -2.45; z <= STAGE.backWallDepth; z += 1.45) {
-      makeBox(scene, [24.5, 0.025, 0.055], [0, 0.02, z], line, false, false);
+    const apronShape = new THREE.Shape();
+    apronShape.moveTo(-9.1, 0);
+    apronShape.lineTo(9.1, 0);
+    apronShape.quadraticCurveTo(0, STAGE.apronDepth * 2, -9.1, 0);
+    const apronMesh = new THREE.Mesh(new THREE.ShapeGeometry(apronShape, 48), apron);
+    apronMesh.rotation.x = -Math.PI / 2;
+    apronMesh.position.y = -0.14;
+    apronMesh.receiveShadow = true;
+    scene.add(apronMesh);
+
+    const lineSpan = STAGE.openingWidth - 0.45;
+    for (let index = 0; index < FLOOR_LINE_COUNT; index += 1) {
+      const x = -lineSpan / 2 + index * lineSpan / (FLOOR_LINE_COUNT - 1);
+      makeBox(scene, [0.045, 0.025, STAGE.backWallDepth], [x, 0.02, STAGE.backWallDepth / 2], line, false, false);
     }
+    makeBox(scene, [0.04, 0.025, STAGE.apronDepth], [0, -0.01, -STAGE.apronDepth / 2], line, false, false);
 
     makeBox(scene, [0.58, 9.5, 1.05], [-8.0, 4.55, -0.05], black);
     makeBox(scene, [0.58, 9.5, 1.05], [8.0, 4.55, -0.05], black);
@@ -209,20 +277,25 @@ export default function Stage3D({ image }: { image: ProjectionImage | null }) {
     makeBox(scene, [0.34, 10.5, STAGE.backWallDepth + 2.2], [12.8, 5.0, 8.3], black);
     makeBox(scene, [27, 0.25, STAGE.backWallDepth + 2.2], [0, 10.15, 8.3], black);
 
-    [1.25, 3.55, 5.85, 8.15].forEach((z, index) => {
-      const inset = 0.18 * index;
-      makeBox(scene, [3.25, 8.25, 0.13], [-6.1 - inset, 4.1, z], curtain, true);
-      makeBox(scene, [3.25, 8.25, 0.13], [6.1 + inset, 4.1, z], curtain, true);
-      makeBox(scene, [15.3, 0.86, 0.16], [0, 8.1, z], curtain, true);
+    const sideLegCenter = SIDE_LEG_INNER_EDGE + SIDE_LEG_WIDTH / 2;
+    SIDE_LEG_DEPTHS.forEach((z) => {
+      makeBox(scene, [SIDE_LEG_WIDTH, 8.5, 0.13], [-sideLegCenter, 4.25, z], curtain, true);
+      makeBox(scene, [SIDE_LEG_WIDTH, 8.5, 0.13], [sideLegCenter, 4.25, z], curtain, true);
+      makeBox(scene, [STAGE.openingWidth, 0.78, 0.16], [0, 8.11, z], curtain, true);
     });
 
-    const screenMaterial = new THREE.MeshBasicMaterial({ color: 0x25282d, side: THREE.DoubleSide, toneMapped: false });
+    const screenMaterial = new THREE.MeshBasicMaterial({ color: 0x25282d, side: THREE.DoubleSide, toneMapped: false, fog: false });
     screenMaterialRef.current = screenMaterial;
     const screen = new THREE.Mesh(new THREE.PlaneGeometry(SCREEN_WIDTH, SCREEN_HEIGHT), screenMaterial);
     screen.position.set(0, SCREEN_HEIGHT / 2, STAGE.cycloramaDepth);
     screen.rotation.y = Math.PI;
     scene.add(screen);
-    makeBox(scene, [SCREEN_WIDTH + 0.2, 0.1, 0.1], [0, SCREEN_HEIGHT + 0.05, STAGE.cycloramaDepth - 0.03], frame);
+    makeBox(
+      scene,
+      [STAGE.openingWidth, STAGE.openingHeight - SCREEN_HEIGHT, 0.12],
+      [0, SCREEN_HEIGHT + (STAGE.openingHeight - SCREEN_HEIGHT) / 2, STAGE.cycloramaDepth + 0.04],
+      black,
+    );
 
     [
       [-4.7, 2.7, -0.2],
@@ -258,6 +331,7 @@ export default function Stage3D({ image }: { image: ProjectionImage | null }) {
     return () => {
       cancelAnimationFrame(animationFrame);
       resizeObserver.disconnect();
+      controls.removeEventListener("end", rememberManualView);
       controls.dispose();
       textureRef.current?.dispose();
       scene.traverse((object) => {
@@ -303,20 +377,30 @@ export default function Stage3D({ image }: { image: ProjectionImage | null }) {
     const camera = cameraRef.current;
     const controls = controlsRef.current;
     if (!camera || !controls) return;
-    const presets: Record<PresetName, { fov: number; position: [number, number, number]; target: [number, number, number] }> = {
-      模板視角: { ...TEMPLATE_CAMERA },
+    const presets: Record<Exclude<PresetName, "模板視角">, CameraPose> = {
       前排: { fov: 48, position: [0, 0.78, -5.2], target: [0, 3.8, 8.0] },
       左側: { fov: 38, position: [-11.5, 2.8, -13.5], target: [0, 3.8, 7.2] },
       右側: { fov: 38, position: [11.5, 2.8, -13.5], target: [0, 3.8, 7.2] },
       俯視: { fov: 42, position: [0, 27, -2], target: [0, 0, 7.2] },
     };
-    const next = presets[name];
-    camera.fov = next.fov;
-    camera.position.set(...next.position);
-    camera.updateProjectionMatrix();
-    controls.target.set(...next.target);
-    controls.update();
+    const next = name === "模板視角" ? readTemplateCamera() ?? TEMPLATE_CAMERA : presets[name];
+    applyCameraPose(camera, controls, next);
+    presetRef.current = name;
     setPreset(name);
+  }
+
+  function resetTemplateView() {
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    if (!camera || !controls) return;
+    try {
+      localStorage.removeItem(TEMPLATE_CAMERA_STORAGE_KEY);
+    } catch {
+      // Reset the live view even when browser storage is unavailable.
+    }
+    applyCameraPose(camera, controls, TEMPLATE_CAMERA);
+    presetRef.current = "模板視角";
+    setPreset("模板視角");
   }
 
   function exportView() {
@@ -335,18 +419,19 @@ export default function Stage3D({ image }: { image: ProjectionImage | null }) {
       <div className="stage3d-badges">
         <span>鏡框 15.42 × 8.50 m</span>
         <span>天幕深度 10.65 m</span>
-        <span>投影圖面 16:9</span>
-        <span className="prototype">已依快速模擬2校正</span>
+        <span>投影 11.30 × 6.36 m・16:9</span>
+        <span className="prototype">影片校正版 V2</span>
       </div>
       <div className="stage3d-presets" aria-label="3D 預設視角">
         {(["模板視角", "前排", "左側", "右側", "俯視"] as PresetName[]).map((name) => (
           <button key={name} className={preset === name ? "active" : ""} onClick={() => moveCamera(name)}>{name}</button>
         ))}
+        <button className="reset-view" onClick={resetTemplateView}>重設模板</button>
         <button className="export" onClick={exportView}>↓ 匯出視角</button>
       </div>
       <div className="stage3d-help">
         <strong>{image ? image.name : "請先從左側選擇背景圖片"}</strong>
-        <span>左鍵旋轉 · 右鍵平移 · 滾輪縮放</span>
+        <span>左鍵旋轉 · 右鍵平移 · 滾輪縮放 · 視角自動保存在本機</span>
       </div>
     </div>
   );

@@ -166,6 +166,8 @@ h3 { font-size: 18px; }
 .stage3d-presets button { border: 0; border-radius: 7px; background: transparent; color: #bdbab5; padding: 7px 10px; font-size: 9px; font-weight: 900; }
 .stage3d-presets button:hover { background: #ffffff12; color: white; }
 .stage3d-presets button.active { background: #f1ece4; color: #25211e; }
+.stage3d-presets button.reset-view { color: #dfb6a7; }
+.stage3d-presets button.reset-view:hover { background: #a9503838; color: #ffd4c5; }
 .stage3d-presets button.export { margin-left: 3px; background: var(--accent); color: white; }
 .stage3d-help { position: absolute; z-index: 2; left: 14px; bottom: 14px; max-width: calc(100% - 28px); display: flex; align-items: center; gap: 10px; padding: 8px 11px; border: 1px solid #ffffff17; border-radius: 9px; background: #111315d9; color: white; box-shadow: 0 5px 18px #0005; pointer-events: none; backdrop-filter: blur(7px); }
 .stage3d-help strong { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
