@@ -8,8 +8,9 @@ export type CameraPose = { fov: number; position: [number, number, number]; targ
 type Person = { id: string; x: number; z: number; rotation: number; heightCm: number; visible: boolean };
 type BackdropStyle = "solid" | "fence";
 type Backdrop = { style: BackdropStyle; x: number; z: number; rotation: number; count: number; widthCm: number; heightCm: number; gapCm: number; color: string; visible: boolean };
-type Layout = { version: 5; people: Person[]; backdrop: Backdrop };
+type Layout = { version: 6; people: Person[]; backdrop: Backdrop };
 type Selection = { kind: "person"; id: string } | { kind: "backdrop" };
+type DragState = { selection: Selection; lastX: number; lastZ: number; x: number; z: number; personIds?: string[] };
 type Legacy = { peopleVisible?: boolean; personHeightCm?: number; backdrop252Visible?: boolean; backdrop202Visible?: boolean; backdrop158Visible?: boolean };
 
 const STAGE = { width: 27, openingWidth: 15.42, openingHeight: 8.5, apronDepth: 2.6, depth: 18.81, cycloramaDepth: 10.65 };
@@ -19,7 +20,8 @@ const LEGACY_CAMERA_KEY = "stage-view-template-camera-v3", CAMERA_KEY_PREFIX = "
 const DEFAULT_PEOPLE: Person[] = [
   ["person-1", -5, 3.2, -10], ["person-2", -4.15, 5.8, 7], ["person-3", -1.25, 4.2, -5],
   ["person-4", 1.25, 4.2, 5], ["person-5", 4.15, 5.8, -7], ["person-6", 5, 3.2, 10],
-].map(([id, x, z, rotation]) => ({ id: String(id), x: Number(x), z: Number(z), rotation: Number(rotation), heightCm: 172, visible: true }));
+].map(([id, x, z, rotation]) => ({ id: String(id), x: Number(x), z: Number(z), rotation: Number(rotation), heightCm: 165, visible: true }));
+const FENCE_DEFAULT_COLOR = "#B7BDC3";
 const DEFAULT_BACKDROP: Backdrop = { style: "solid", x: 0, z: 7.36, rotation: 0, count: 1, widthCm: 122, heightCm: 252, gapCm: 0, color: "#765548", visible: true };
 const TEMPLATE_CAMERA: CameraPose = { fov: 20, position: [0, 1.25, -22], target: [0, 3.5, 7] };
 export type Stage3DHandle = { exportView: () => void; captureView: () => string | null; getCameraPose: () => CameraPose | null };
@@ -35,7 +37,7 @@ type Stage3DProps = {
 const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
 const round = (n: number, digits = 2) => Math.round(n * 10 ** digits) / 10 ** digits;
 const normalizeRotation = (n: number) => { let r = n % 360; if (r > 180) r -= 360; if (r < -180) r += 360; return round(r, 1) };
-const copyDefaults = (): Layout => ({ version: 5, people: DEFAULT_PEOPLE.map(p => ({ ...p })), backdrop: { ...DEFAULT_BACKDROP } });
+const copyDefaults = (): Layout => ({ version: 6, people: DEFAULT_PEOPLE.map(p => ({ ...p })), backdrop: { ...DEFAULT_BACKDROP } });
 const fit169 = (w: number, h: number) => w / Math.max(1, h) > 16 / 9 ? { width: h * 16 / 9, height: h } : { width: w, height: w * 9 / 16 };
 const validTuple = (v: unknown): v is [number, number, number] => Array.isArray(v) && v.length === 3 && v.every(n => typeof n === "number" && Number.isFinite(n));
 
@@ -82,7 +84,7 @@ function readCamera(key: string): CameraPose | null {
 function readLayout(): Layout {
   try {
     const v = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "null") as { version?: number; people?: Partial<Person>[]; backdrop?: Partial<Backdrop> } | null;
-    if ((v?.version === 2 || v?.version === 3 || v?.version === 4 || v?.version === 5) && Array.isArray(v.people) && v.backdrop) {
+    if ((v?.version === 2 || v?.version === 3 || v?.version === 4 || v?.version === 5 || v?.version === 6) && Array.isArray(v.people) && v.backdrop) {
       const seen = new Set<string>();
       const people = v.people.slice(0, MAX_PEOPLE).map((p, i) => {
         const fallback = DEFAULT_PEOPLE[i] ?? { ...DEFAULT_PEOPLE[0], id: `person-${i + 1}`, x: 0, z: 3.2 };
@@ -92,14 +94,15 @@ function readLayout(): Layout {
       });
       const backdrop = cleanBackdrop(v.backdrop);
       if (v.version === 2 && backdrop.gapCm === 20) backdrop.gapCm = 0;
-      return { version: 5, people, backdrop: clampBackdrop(backdrop) };
+      if (v.version === 5 && backdrop.style === "fence" && backdrop.color.toLowerCase() === DEFAULT_BACKDROP.color) backdrop.color = FENCE_DEFAULT_COLOR;
+      return { version: 6, people, backdrop: clampBackdrop(backdrop) };
     }
   } catch { /* migrate below */ }
   const next = copyDefaults();
   try {
     const old = JSON.parse(localStorage.getItem(OLD_KEY) || "null") as Legacy | null;
     if (old) {
-      const heightCm = clamp(Math.round(Number(old.personHeightCm) || 172), 158, 185);
+      const heightCm = clamp(Math.round(Number(old.personHeightCm) || 165), 158, 185);
       next.people = next.people.map(p => ({ ...p, heightCm, visible: old.peopleVisible ?? true }));
       next.backdrop.visible = old.backdrop252Visible ?? old.backdrop158Visible ?? old.backdrop202Visible ?? true;
     }
@@ -131,18 +134,18 @@ function makePerson(material: THREE.Material) {
 function makePanel(panelMat: THREE.Material, frameMat: THREE.Material, width: number, height: number, style: BackdropStyle) {
   const g = new THREE.Group();
   if (style === "fence") {
-    const inset = Math.min(.05, width * .08), picketCount = Math.max(4, Math.round(width / .14)), usableWidth = Math.max(.1, width - inset * 2), spacing = usableWidth / (picketCount - 1), picketWidth = Math.min(.065, spacing * .48);
-    const picketGeo = new THREE.BoxGeometry(picketWidth, height, .08);
-    for (let i = 0; i < picketCount; i++) { const picket = new THREE.Mesh(picketGeo, panelMat); picket.position.set(-usableWidth / 2 + i * spacing, height / 2, 0); g.add(picket) }
-    const railGeo = new THREE.BoxGeometry(width, Math.min(.09, height * .07), .1);
-    [height * .34, height * .72].forEach(y => { const rail = new THREE.Mesh(railGeo, panelMat); rail.position.set(0, y, .015); g.add(rail) });
+    const bar = Math.min(.065, width * .08), verticalGeo = new THREE.BoxGeometry(bar, height, .1), horizontalGeo = new THREE.BoxGeometry(width, bar, .1);
+    for (let i = 1; i <= 5; i++) { const picket = new THREE.Mesh(verticalGeo, panelMat); picket.position.set(-width / 2 + width * i / 6, height / 2, 0); g.add(picket) }
+    const left = new THREE.Mesh(verticalGeo, panelMat); left.position.set(-width / 2 + bar / 2, height / 2, 0); const right = left.clone(); right.position.x *= -1;
+    const bottom = new THREE.Mesh(horizontalGeo, panelMat); bottom.position.set(0, bar / 2, 0); const top = bottom.clone(); top.position.y = height - bar / 2;
+    g.add(left, right, bottom, top);
   } else {
     const panel = new THREE.Mesh(new THREE.BoxGeometry(width, height, .08), panelMat); panel.position.y = height / 2; g.add(panel);
+    const sideGeo = new THREE.BoxGeometry(.045, height, .12), left = new THREE.Mesh(sideGeo, frameMat); left.position.set(-width / 2 + .0225, height / 2, 0); const right = left.clone(); right.position.x *= -1; g.add(left, right);
   }
-  const sideGeo = new THREE.BoxGeometry(.045, height, .12), left = new THREE.Mesh(sideGeo, frameMat); left.position.set(-width / 2 + .0225, height / 2, 0); const right = left.clone(); right.position.x *= -1;
   const footGeo = new THREE.BoxGeometry(Math.min(.28, width * .45), .06, BACKDROP_DEPTH), lf = new THREE.Mesh(footGeo, frameMat); lf.position.set(-width * .32, .03, .08); const rf = lf.clone(); rf.position.x *= -1;
   const wheelGeo = new THREE.CylinderGeometry(.045, .045, .035, 10), lw = new THREE.Mesh(wheelGeo, frameMat); lw.position.set(-width * .32, .045, .18); lw.rotation.x = Math.PI / 2; const rw = lw.clone(); rw.position.x *= -1;
-  g.add(left, right, lf, rf, lw, rw); return g;
+  g.add(lf, rf, lw, rw); return g;
 }
 function projectionTexture(image: ProjectionImage) {
   return new Promise<THREE.CanvasTexture>((resolve, reject) => {
@@ -163,14 +166,17 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
   const mountRef = useRef<HTMLDivElement>(null), rendererRef = useRef<THREE.WebGLRenderer | null>(null), cameraRef = useRef<THREE.PerspectiveCamera | null>(null), controlsRef = useRef<OrbitControls | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null), screenMatRef = useRef<THREE.MeshBasicMaterial | null>(null), textureRef = useRef<THREE.Texture | null>(null), personMatRef = useRef<THREE.Material | null>(null);
   const backdropMatsRef = useRef<{ panel: THREE.Material; frame: THREE.Material } | null>(null), peopleRef = useRef(new Map<string, THREE.Group>()), backdropRef = useRef<THREE.Group | null>(null), backdropSpecRef = useRef("");
-  const boxRef = useRef<{ box: THREE.Box3; helper: THREE.Box3Helper } | null>(null), dragRef = useRef<{ selection: Selection; dx: number; dz: number } | null>(null), timerRef = useRef<number | null>(null), applyingSyncRef = useRef(false), onCameraChangeRef = useRef(onCameraChange);
+  const boxRef = useRef<{ box: THREE.Box3; helper: THREE.Box3Helper } | null>(null), dragRef = useRef<DragState | null>(null), timerRef = useRef<number | null>(null), applyingSyncRef = useRef(false), onCameraChangeRef = useRef(onCameraChange);
   const [preset, setPreset] = useState<PresetName>("自由視角"), [layout, setLayout] = useState<Layout>(readLayout), [selection, setSelection] = useState<Selection>({ kind: "backdrop" }), [error, setError] = useState(""), [notice, setNotice] = useState("");
   const [controlsCollapsed, setControlsCollapsed] = useState(() => localStorage.getItem("stage3d-controls-collapsed") === "1");
   const [activePersonId, setActivePersonId] = useState(() => layout.people[0]?.id ?? "");
-  const layoutRef = useRef(layout), selectionRef = useRef(selection), cameraKeyRef = useRef(cameraKey(image)); layoutRef.current = layout; selectionRef.current = selection; cameraKeyRef.current = cameraKey(image);
+  const [selectedPersonIds, setSelectedPersonIds] = useState<string[]>([]);
+  const layoutRef = useRef(layout), selectionRef = useRef(selection), selectedPersonIdsRef = useRef(selectedPersonIds), cameraKeyRef = useRef(cameraKey(image)); layoutRef.current = layout; selectionRef.current = selection; selectedPersonIdsRef.current = selectedPersonIds; cameraKeyRef.current = cameraKey(image);
   onCameraChangeRef.current = onCameraChange;
   const showNotice = (message: string) => { setNotice(message); if (timerRef.current) clearTimeout(timerRef.current); timerRef.current = window.setTimeout(() => setNotice(""), 2600) };
   const updatePerson = (id: string, patch: Partial<Person>) => setLayout(current => ({ ...current, people: current.people.map(p => p.id === id ? clampPerson(cleanPerson({ ...p, ...patch }, p)) : p) }));
+  const updatePeople = (ids: string[], patch: Partial<Person>) => { const chosen = new Set(ids); setLayout(current => ({ ...current, people: current.people.map(p => chosen.has(p.id) ? clampPerson(cleanPerson({ ...p, ...patch }, p)) : p) })) };
+  const movePeopleBy = (ids: string[], dx: number, dz: number) => { const chosen = new Set(ids); setLayout(current => { const people = current.people.filter(p => chosen.has(p.id)); if (!people.length) return current; let minX = -Infinity, maxX = Infinity, minZ = -Infinity, maxZ = Infinity; people.forEach(p => { const r = .32 * p.heightCm / 170; minX = Math.max(minX, -13.5 + r - p.x); maxX = Math.min(maxX, 13.5 - r - p.x); minZ = Math.max(minZ, r - p.z); maxZ = Math.min(maxZ, STAGE.depth - r - p.z) }); const mx = clamp(dx, minX, maxX), mz = clamp(dz, minZ, maxZ); return { ...current, people: current.people.map(p => chosen.has(p.id) ? { ...p, x: round(p.x + mx), z: round(p.z + mz) } : p) } }) };
   const updateBackdrop = (patch: Partial<Backdrop>, reject = true) => setLayout(current => {
     const candidate = cleanBackdrop({ ...current.backdrop, ...patch });
     if (reject && !backdropFits(candidate)) { setTimeout(() => showNotice("這個背板列的尺寸或角度無法放入舞台。"), 0); return current }
@@ -204,12 +210,12 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     const setRay = (e: PointerEvent) => { const r = renderer.domElement.getBoundingClientRect(); pointer.set((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1); ray.setFromCamera(pointer, camera) };
     const pick = (e: PointerEvent) => { setRay(e); const targets: THREE.Object3D[] = [...peopleRef.current.values()]; if (backdropRef.current) targets.push(backdropRef.current); let o: THREE.Object3D | null = ray.intersectObjects(targets, true)[0]?.object ?? null; while (o) { if (o.userData.selection) return o.userData.selection as Selection; o = o.parent } return null };
     const floorPoint = (e: PointerEvent) => { setRay(e); return ray.ray.intersectPlane(plane, new THREE.Vector3()) };
-    const down = (e: PointerEvent) => { if (!showObjectControls || e.button !== 0) return; const selected = pick(e), point = floorPoint(e); if (!selected || !point) return; const pos = selected.kind === "backdrop" ? layoutRef.current.backdrop : layoutRef.current.people.find(p => p.id === selected.id); if (!pos) return; dragRef.current = { selection: selected, dx: pos.x - point.x, dz: pos.z - point.z }; controls.enabled = false; setSelection(selected); if (selected.kind === "person") setActivePersonId(selected.id); renderer.domElement.setPointerCapture(e.pointerId); e.preventDefault() };
-    const move = (e: PointerEvent) => { const drag = dragRef.current, point = floorPoint(e); if (!drag || !point) return; if (drag.selection.kind === "backdrop") updateBackdrop({ x: point.x + drag.dx, z: point.z + drag.dz }, false); else updatePerson(drag.selection.id, { x: point.x + drag.dx, z: point.z + drag.dz }); e.preventDefault() };
+    const down = (e: PointerEvent) => { if (!showObjectControls || e.button !== 0) return; const selected = pick(e), point = floorPoint(e); if (!selected || !point) return; if (selected.kind === "backdrop") { const b = layoutRef.current.backdrop; setSelectedPersonIds([]); dragRef.current = { selection: selected, lastX: point.x, lastZ: point.z, x: b.x, z: b.z } } else { const currentIds = selectedPersonIdsRef.current, personIds = e.shiftKey ? Array.from(new Set([...currentIds, selected.id])) : currentIds.includes(selected.id) ? currentIds : [selected.id]; const person = layoutRef.current.people.find(p => p.id === selected.id); if (!person) return; setSelectedPersonIds(personIds); setActivePersonId(selected.id); dragRef.current = { selection: selected, lastX: point.x, lastZ: point.z, x: person.x, z: person.z, personIds } } controls.enabled = false; setSelection(selected); renderer.domElement.setPointerCapture(e.pointerId); e.preventDefault() };
+    const move = (e: PointerEvent) => { const drag = dragRef.current, point = floorPoint(e); if (!drag || !point) return; const dx = point.x - drag.lastX, dz = point.z - drag.lastZ; drag.lastX = point.x; drag.lastZ = point.z; if (drag.selection.kind === "backdrop") { drag.x += dx; drag.z += dz; updateBackdrop({ x: drag.x, z: drag.z }, false) } else movePeopleBy(drag.personIds ?? [drag.selection.id], dx, dz); e.preventDefault() };
     const up = (e: PointerEvent) => { if (!dragRef.current) return; dragRef.current = null; controls.enabled = true; if (renderer.domElement.hasPointerCapture(e.pointerId)) renderer.domElement.releasePointerCapture(e.pointerId); e.preventDefault() };
     renderer.domElement.addEventListener("pointerdown", down, true); renderer.domElement.addEventListener("pointermove", move, true); renderer.domElement.addEventListener("pointerup", up, true); renderer.domElement.addEventListener("pointercancel", up, true);
     const ro = new ResizeObserver(() => { const s = fit169(Math.max(1, mount.clientWidth), Math.max(1, mount.clientHeight)); renderer.setSize(s.width, s.height, false); camera.aspect = 16 / 9; camera.updateProjectionMatrix() }); ro.observe(mount);
-    const animate = () => { controls.update(); const s = selectionRef.current, obj = s.kind === "backdrop" ? backdropRef.current : peopleRef.current.get(s.id); if (boxRef.current) { boxRef.current.helper.visible = showObjectControls && Boolean(obj?.visible); if (showObjectControls && obj?.visible) boxRef.current.box.setFromObject(obj) } renderer.render(scene, camera); frame = requestAnimationFrame(animate) }; animate();
+    const animate = () => { controls.update(); const s = selectionRef.current, objects = s.kind === "backdrop" ? [backdropRef.current] : selectedPersonIdsRef.current.map(id => peopleRef.current.get(id)); const visible = objects.filter((o): o is THREE.Group => Boolean(o?.visible)); if (boxRef.current) { boxRef.current.helper.visible = showObjectControls && visible.length > 0; if (showObjectControls && visible.length) { boxRef.current.box.makeEmpty(); visible.forEach(o => boxRef.current?.box.expandByObject(o)) } } renderer.render(scene, camera); frame = requestAnimationFrame(animate) }; animate();
     return () => { cancelAnimationFrame(frame); ro.disconnect(); controls.removeEventListener("change", emitCamera); controls.removeEventListener("end", remember); controls.dispose(); textureRef.current?.dispose(); scene.traverse(o => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose()) } }); renderer.dispose(); renderer.domElement.remove(); rendererRef.current = cameraRef.current = controlsRef.current = sceneRef.current = screenMatRef.current = personMatRef.current = backdropMatsRef.current = boxRef.current = null; peopleRef.current.clear(); backdropRef.current = null };
   }, []);
 
@@ -225,11 +231,11 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     if (backdropSpecRef.current !== spec) { while (g.children.length) g.children.pop()?.traverse(o => { if (o instanceof THREE.Mesh) o.geometry.dispose() }); const width = b.widthCm / 100, height = b.heightCm / 100, gap = b.gapCm / 100, total = b.count * width + (b.count - 1) * gap; for (let i = 0; i < b.count; i++) { const panel = makePanel(mats.panel, mats.frame, width, height, b.style); panel.position.x = -total / 2 + width / 2 + i * (width + gap); g.add(panel) } backdropSpecRef.current = spec }
     g.position.set(b.x, 0, b.z); g.rotation.y = THREE.MathUtils.degToRad(b.rotation); g.visible = b.visible;
   }, [layout.backdrop]);
-  useEffect(() => { if (selection.kind === "person" && !layout.people.some(p => p.id === selection.id)) setSelection({ kind: "backdrop" }) }, [layout.people, selection]);
+  useEffect(() => { const valid = new Set(layout.people.map(p => p.id)), next = selectedPersonIds.filter(id => valid.has(id)); if (next.length !== selectedPersonIds.length) setSelectedPersonIds(next); if (selection.kind === "person" && !valid.has(selection.id)) setSelection({ kind: "backdrop" }) }, [layout.people, selectedPersonIds, selection]);
   useEffect(() => { if (!layout.people.some(p => p.id === activePersonId)) setActivePersonId(layout.people[0]?.id ?? "") }, [activePersonId, layout.people]);
   useEffect(() => {
     if (!showObjectControls) return;
-    const key = (e: KeyboardEvent) => { if (!e.key.startsWith("Arrow") || (e.target as HTMLElement | null)?.closest("input,textarea,select,button,[contenteditable='true']")) return; const step = e.shiftKey ? .01 : .1, delta = ({ ArrowUp: [0, step], ArrowDown: [0, -step], ArrowLeft: [step, 0], ArrowRight: [-step, 0] } as Record<string, [number, number]>)[e.key]; if (!delta) return; e.preventDefault(); const s = selectionRef.current, current = layoutRef.current; if (s.kind === "backdrop") updateBackdrop({ x: current.backdrop.x + delta[0], z: current.backdrop.z + delta[1] }, false); else { const p = current.people.find(x => x.id === s.id); if (p) updatePerson(p.id, { x: p.x + delta[0], z: p.z + delta[1] }) } }; window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
+    const key = (e: KeyboardEvent) => { if (!e.key.startsWith("Arrow") || (e.target as HTMLElement | null)?.closest("input,textarea,select,button,[contenteditable='true']")) return; const step = e.shiftKey ? .01 : .1, delta = ({ ArrowUp: [0, step], ArrowDown: [0, -step], ArrowLeft: [step, 0], ArrowRight: [-step, 0] } as Record<string, [number, number]>)[e.key]; if (!delta) return; e.preventDefault(); const s = selectionRef.current, current = layoutRef.current; if (s.kind === "backdrop") updateBackdrop({ x: current.backdrop.x + delta[0], z: current.backdrop.z + delta[1] }, false); else movePeopleBy(selectedPersonIdsRef.current.length ? selectedPersonIdsRef.current : [s.id], delta[0], delta[1]) }; window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
   }, [showObjectControls]);
   useEffect(() => {
     if (!syncCamera || syncCamera.sourceId === syncId) return;
@@ -263,15 +269,16 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
   const exportView = () => { const data = captureView(); if (!data) return; const a = document.createElement("a"); a.download = `${image?.name || "舞台"}-3D視角.png`; a.href = data; a.click() };
   useImperativeHandle(ref, () => ({ exportView, captureView, getCameraPose }), [image]);
 
-  const addPerson = (source?: Person) => { if (layout.people.length >= MAX_PEOPLE) return showNotice(`人物最多 ${MAX_PEOPLE} 位。`); const id = `person-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, base = source ?? { ...DEFAULT_PEOPLE[0], x: 0, z: 3.2, rotation: 0 }, next = clampPerson({ ...base, id, x: base.x + (source ? .5 : 0) }); setLayout(c => ({ ...c, people: [...c.people, next] })); setActivePersonId(id); setSelection({ kind: "person", id }) };
-  const deletePerson = (id: string) => { setLayout(c => ({ ...c, people: c.people.filter(p => p.id !== id) })); setSelection({ kind: "backdrop" }) };
+  const addPerson = (source?: Person) => { if (layout.people.length >= MAX_PEOPLE) return showNotice(`人物最多 ${MAX_PEOPLE} 位。`); const id = `person-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, base = source ?? { ...DEFAULT_PEOPLE[0], x: 0, z: 3.2, rotation: 0 }, next = clampPerson({ ...base, id, x: base.x + (source ? .5 : 0) }); setLayout(c => ({ ...c, people: [...c.people, next] })); setActivePersonId(id); setSelectedPersonIds([id]); setSelection({ kind: "person", id }) };
+  const deletePerson = (id: string) => { setLayout(c => ({ ...c, people: c.people.filter(p => p.id !== id) })); setSelectedPersonIds([]); setSelection({ kind: "backdrop" }) };
   const resetPerson = (id: string) => { const initial = DEFAULT_PEOPLE.find(p => p.id === id) ?? { ...DEFAULT_PEOPLE[0], id, x: 0, z: 3.2, rotation: 0 }; setLayout(c => ({ ...c, people: c.people.map(p => p.id === id ? { ...initial } : p) })); showNotice("人物位置與身高已重設。") };
   const resetBackdrop = () => { setLayout(c => ({ ...c, backdrop: { ...DEFAULT_BACKDROP } })); setSelection({ kind: "backdrop" }); showNotice("背板列已重設到第 9 線中央。") };
-  const resetAll = () => { if (confirm("要把全部人物與背板恢復為初始配置嗎？")) { const next = copyDefaults(); setLayout(next); setActivePersonId(next.people[0]?.id ?? ""); setSelection({ kind: "backdrop" }); showNotice("全部 3D 物件已重設。") } };
+  const resetAll = () => { if (confirm("要把全部人物與背板恢復為初始配置嗎？")) { const next = copyDefaults(); setLayout(next); setActivePersonId(next.people[0]?.id ?? ""); setSelectedPersonIds([]); setSelection({ kind: "backdrop" }); showNotice("全部 3D 物件已重設。") } };
   const snapPerson = (id: string) => { const z = layout.people.find(p => p.id === id)?.z; if (z == null) return; const i = clamp(Math.round(z / LINE_GAP), 0, LINE_COUNT - 1); updatePerson(id, { z: i * LINE_GAP }); showNotice(`人物已對齊第 ${i + 1} 線。`) };
   const snapBackdrop = () => { const i = clamp(Math.round(layout.backdrop.z / LINE_GAP), 0, LINE_COUNT - 1); updateBackdrop({ z: i * LINE_GAP }, false); showNotice(`背板已對齊第 ${i + 1} 線。`) };
   const person = layout.people.find(p => p.id === activePersonId) ?? layout.people[0] ?? null;
-  const personIndex = person ? layout.people.findIndex(p => p.id === person.id) : -1;
+  const selectedPeople = selection.kind === "person" ? layout.people.filter(p => selectedPersonIds.includes(p.id)) : [];
+  const controlledPeople = selectedPeople.length ? selectedPeople : person ? [person] : [];
 
   return <div className={`stage3d-shell ${compact ? "compact" : ""} ${showObjectControls && !controlsCollapsed ? "controls-open" : ""}`}>
     <div ref={mountRef} className="stage3d-canvas" aria-label="臺中市港區藝術中心 3D 舞台預覽" />
@@ -282,33 +289,28 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     {showObjectControls && !controlsCollapsed && <div className="stage3d-objects" aria-label="3D 物件調整">
       <div className="stage3d-objects-title"><div><strong>物件調整</strong><span>人物與背板分區控制</span></div><button onClick={() => setControlsCollapsed(true)}>收合 ›</button></div>
 
-      <section className={`stage3d-control-section person-section ${selection.kind === "person" ? "active" : ""}`} onPointerDown={() => person && setSelection({ kind: "person", id: person.id })}>
+      <section className={`stage3d-control-section person-section ${selection.kind === "person" ? "active" : ""}`} onPointerDown={() => { if (person) { setSelection({ kind: "person", id: person.id }); if (!selectedPersonIds.includes(person.id)) setSelectedPersonIds([person.id]) } }}>
         <div className="stage3d-section-heading">
-          <div><strong>人物調整</strong><span>{layout.people.length} 位人物</span></div>
+          <div><strong>人物調整</strong><span>{selectedPeople.length > 1 ? `${selectedPeople.length} 位已選取` : `${layout.people.length} 位人物`}</span></div>
           <button onClick={() => addPerson()}>＋ 新增人物</button>
         </div>
         {person ? <>
           <div className="stage3d-person-picker">
-            <label><span>選擇人物</span><select value={person.id} onChange={e => { setActivePersonId(e.target.value); setSelection({ kind: "person", id: e.target.value }); }}>{layout.people.map((p, i) => <option key={p.id} value={p.id}>人物 {i + 1}{p.visible ? "" : "（隱藏）"}</option>)}</select></label>
-            <label className="stage3d-visible-check"><input type="checkbox" checked={person.visible} onChange={e => updatePerson(person.id, { visible: e.target.checked })} />顯示</label>
+            <label><span>選擇人物</span><select value={person.id} onChange={e => { setActivePersonId(e.target.value); setSelectedPersonIds([e.target.value]); setSelection({ kind: "person", id: e.target.value }); }}>{layout.people.map((p, i) => <option key={p.id} value={p.id}>人物 {i + 1}{p.visible ? "" : "（隱藏）"}</option>)}</select></label>
+            <label className="stage3d-visible-check"><input type="checkbox" checked={controlledPeople.every(p => p.visible)} onChange={e => updatePeople(controlledPeople.map(p => p.id), { visible: e.target.checked })} />顯示</label>
           </div>
-          <label className="stage3d-range-field"><span>人物身高</span><input type="range" min="158" max="185" value={person.heightCm} onChange={e => updatePerson(person.id, { heightCm: +e.target.value })} /><b>{person.heightCm} cm</b></label>
-          <div className="stage3d-position-fields">
-            <label><span>左右 X</span><div><input type="number" step=".1" value={round(person.x)} onChange={e => updatePerson(person.id, { x: +e.target.value })} /><b>m</b></div></label>
-            <label><span>前後深度</span><div><input type="number" step=".1" value={round(person.z)} onChange={e => updatePerson(person.id, { z: +e.target.value })} /><b>m</b></div></label>
-          </div>
-          <label className="stage3d-range-field"><span>面向角度</span><input title="雙擊重設為 0°" type="range" min="-180" max="180" value={person.rotation} onDoubleClick={() => updatePerson(person.id, { rotation: 0 })} onChange={e => updatePerson(person.id, { rotation: +e.target.value })} /><b>{person.rotation}°</b></label>
-          <div className="stage3d-quick-actions"><button onClick={() => updatePerson(person.id, { rotation: 0 })}>面向觀眾</button><button onClick={() => snapPerson(person.id)}>對齊地墊線</button><button onClick={() => resetPerson(person.id)}>重設人物</button></div>
+          <label className="stage3d-range-field"><span>{selectedPeople.length > 1 ? `身高（${selectedPeople.length}人）` : "人物身高"}</span><input type="range" min="158" max="185" value={person.heightCm} onChange={e => updatePeople(controlledPeople.map(p => p.id), { heightCm: +e.target.value })} /><b>{person.heightCm} cm</b></label>
+          <div className="stage3d-quick-actions"><button onClick={() => snapPerson(person.id)}>對齊地墊線</button><button onClick={() => resetPerson(person.id)}>重設人物</button></div>
           <div className="stage3d-person-actions"><button onClick={() => addPerson(person)} disabled={layout.people.length >= MAX_PEOPLE}>複製人物</button><button className="danger" onClick={() => deletePerson(person.id)}>刪除人物</button></div>
         </> : <button className="stage3d-empty-person" onClick={() => addPerson()}>＋ 新增第一位人物</button>}
       </section>
 
-      <section className={`stage3d-control-section backdrop-section ${selection.kind === "backdrop" ? "active" : ""}`} onPointerDown={() => setSelection({ kind: "backdrop" })}>
+      <section className={`stage3d-control-section backdrop-section ${selection.kind === "backdrop" ? "active" : ""}`} onPointerDown={() => { setSelectedPersonIds([]); setSelection({ kind: "backdrop" }) }}>
         <div className="stage3d-section-heading">
           <div><strong>背板列調整</strong><span>整列共同移動與旋轉</span></div>
           <label className="stage3d-visible-check"><input type="checkbox" checked={layout.backdrop.visible} onChange={e => updateBackdrop({ visible: e.target.checked })} />顯示</label>
         </div>
-        <label className="stage3d-backdrop-type"><span>物件類型</span><select value={layout.backdrop.style} onChange={e => { const style = e.target.value as BackdropStyle; updateBackdrop(style === "fence" ? { style, widthCm: 112, heightCm: 202 } : { style, widthCm: 122, heightCm: 252 }) }}><option value="solid">實心背板</option><option value="fence">柵欄</option></select></label>
+        <label className="stage3d-backdrop-type"><span>物件類型</span><select value={layout.backdrop.style} onChange={e => { const style = e.target.value as BackdropStyle; updateBackdrop(style === "fence" ? { style, widthCm: 112, heightCm: 202, color: FENCE_DEFAULT_COLOR } : { style, widthCm: 122, heightCm: 252, color: DEFAULT_BACKDROP.color }) }}><option value="solid">實心背板</option><option value="fence">柵欄</option></select></label>
         <div className="stage3d-backdrop-fields">
           <label><span>片數</span><input type="number" min="1" max="30" value={layout.backdrop.count} onChange={e => updateBackdrop({ count: +e.target.value })} /></label>
           <label><span>單片寬</span><div><input type="number" min="30" max="500" value={layout.backdrop.widthCm} onChange={e => updateBackdrop({ widthCm: +e.target.value })} /><b>cm</b></div></label>
@@ -326,7 +328,7 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
 
       <button className="stage3d-reset-all" onClick={resetAll}>重設全部配置</button>
     </div>}
-    {!compact && <div className="stage3d-help"><strong>{image ? image.name : "請先從左側選擇背景圖片"}</strong><span>{showObjectControls ? "點選物件後拖曳 · 方向鍵依觀眾視角移動 10 cm · Shift＋方向鍵 1 cm" : "左鍵旋轉 · 右鍵平移 · 滾輪縮放"}</span></div>}
+    {!compact && <div className="stage3d-help"><strong>{image ? image.name : "請先從左側選擇背景圖片"}</strong><span>{showObjectControls ? "Shift＋點選可多選人物 · 拖曳或方向鍵一起移動 · Shift＋方向鍵 1 cm" : "左鍵旋轉 · 右鍵平移 · 滾輪縮放"}</span></div>}
   </div>;
 });
 export default Stage3D;

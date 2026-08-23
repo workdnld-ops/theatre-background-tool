@@ -233,7 +233,7 @@ h3 { font-size: 18px; }
 .stage3d-color-field > div { display: flex; align-items: center; gap: 8px; }
 .stage3d-color-field input { width: 48px; height: 30px; box-sizing: border-box; border: 1px solid #ffffff28; border-radius: 6px; background: #242628; padding: 2px; cursor: pointer; }
 .stage3d-color-field b { color: #c6c2bc; font-size: 12px; letter-spacing: .04em; }
-.stage3d-quick-actions, .stage3d-person-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 6px; }
+.stage3d-quick-actions, .stage3d-person-actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px; margin-top: 6px; }
 .stage3d-quick-actions.backdrop-actions { grid-template-columns: 1fr 1fr; }
 .stage3d-person-actions { grid-template-columns: 1fr 1fr; }
 .stage3d-quick-actions button, .stage3d-person-actions button, .stage3d-reset-all { border: 1px solid #ffffff17; border-radius: 7px; background: #ffffff0b; color: #d6d2cc; padding: 6px 4px; font-size: 12px; font-weight: 900; }
