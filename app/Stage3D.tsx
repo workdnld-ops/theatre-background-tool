@@ -6,8 +6,9 @@ type ProjectionImage = { id?: string; url: string; name: string; note: string; t
 type PresetName = "自由視角" | "前排" | "左側" | "右側" | "俯視";
 export type CameraPose = { fov: number; position: [number, number, number]; target: [number, number, number] };
 type Person = { id: string; x: number; z: number; rotation: number; heightCm: number; visible: boolean };
-type Backdrop = { x: number; z: number; rotation: number; count: number; widthCm: number; heightCm: number; gapCm: number; color: string; visible: boolean };
-type Layout = { version: 4; people: Person[]; backdrop: Backdrop };
+type BackdropStyle = "solid" | "fence";
+type Backdrop = { style: BackdropStyle; x: number; z: number; rotation: number; count: number; widthCm: number; heightCm: number; gapCm: number; color: string; visible: boolean };
+type Layout = { version: 5; people: Person[]; backdrop: Backdrop };
 type Selection = { kind: "person"; id: string } | { kind: "backdrop" };
 type Legacy = { peopleVisible?: boolean; personHeightCm?: number; backdrop252Visible?: boolean; backdrop202Visible?: boolean; backdrop158Visible?: boolean };
 
@@ -19,7 +20,7 @@ const DEFAULT_PEOPLE: Person[] = [
   ["person-1", -5, 3.2, -10], ["person-2", -4.15, 5.8, 7], ["person-3", -1.25, 4.2, -5],
   ["person-4", 1.25, 4.2, 5], ["person-5", 4.15, 5.8, -7], ["person-6", 5, 3.2, 10],
 ].map(([id, x, z, rotation]) => ({ id: String(id), x: Number(x), z: Number(z), rotation: Number(rotation), heightCm: 172, visible: true }));
-const DEFAULT_BACKDROP: Backdrop = { x: 0, z: 7.36, rotation: 0, count: 1, widthCm: 122, heightCm: 252, gapCm: 0, color: "#765548", visible: true };
+const DEFAULT_BACKDROP: Backdrop = { style: "solid", x: 0, z: 7.36, rotation: 0, count: 1, widthCm: 122, heightCm: 252, gapCm: 0, color: "#765548", visible: true };
 const TEMPLATE_CAMERA: CameraPose = { fov: 20, position: [0, 1.25, -22], target: [0, 3.5, 7] };
 export type Stage3DHandle = { exportView: () => void; captureView: () => string | null; getCameraPose: () => CameraPose | null };
 type Stage3DProps = {
@@ -34,7 +35,7 @@ type Stage3DProps = {
 const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
 const round = (n: number, digits = 2) => Math.round(n * 10 ** digits) / 10 ** digits;
 const normalizeRotation = (n: number) => { let r = n % 360; if (r > 180) r -= 360; if (r < -180) r += 360; return round(r, 1) };
-const copyDefaults = (): Layout => ({ version: 4, people: DEFAULT_PEOPLE.map(p => ({ ...p })), backdrop: { ...DEFAULT_BACKDROP } });
+const copyDefaults = (): Layout => ({ version: 5, people: DEFAULT_PEOPLE.map(p => ({ ...p })), backdrop: { ...DEFAULT_BACKDROP } });
 const fit169 = (w: number, h: number) => w / Math.max(1, h) > 16 / 9 ? { width: h * 16 / 9, height: h } : { width: w, height: w * 9 / 16 };
 const validTuple = (v: unknown): v is [number, number, number] => Array.isArray(v) && v.length === 3 && v.every(n => typeof n === "number" && Number.isFinite(n));
 
@@ -50,6 +51,7 @@ function cleanPerson(value: Partial<Person>, fallback: Person): Person {
 }
 function cleanBackdrop(value: Partial<Backdrop>): Backdrop {
   return {
+    style: value.style === "fence" ? "fence" : "solid",
     x: clamp(Number.isFinite(value.x) ? Number(value.x) : 0, -13.5, 13.5),
     z: clamp(Number.isFinite(value.z) ? Number(value.z) : 7.36, 0, STAGE.depth),
     rotation: normalizeRotation(Number.isFinite(value.rotation) ? Number(value.rotation) : 0),
@@ -80,7 +82,7 @@ function readCamera(key: string): CameraPose | null {
 function readLayout(): Layout {
   try {
     const v = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "null") as { version?: number; people?: Partial<Person>[]; backdrop?: Partial<Backdrop> } | null;
-    if ((v?.version === 2 || v?.version === 3 || v?.version === 4) && Array.isArray(v.people) && v.backdrop) {
+    if ((v?.version === 2 || v?.version === 3 || v?.version === 4 || v?.version === 5) && Array.isArray(v.people) && v.backdrop) {
       const seen = new Set<string>();
       const people = v.people.slice(0, MAX_PEOPLE).map((p, i) => {
         const fallback = DEFAULT_PEOPLE[i] ?? { ...DEFAULT_PEOPLE[0], id: `person-${i + 1}`, x: 0, z: 3.2 };
@@ -90,7 +92,7 @@ function readLayout(): Layout {
       });
       const backdrop = cleanBackdrop(v.backdrop);
       if (v.version === 2 && backdrop.gapCm === 20) backdrop.gapCm = 0;
-      return { version: 4, people, backdrop: clampBackdrop(backdrop) };
+      return { version: 5, people, backdrop: clampBackdrop(backdrop) };
     }
   } catch { /* migrate below */ }
   const next = copyDefaults();
@@ -126,8 +128,17 @@ function makePerson(material: THREE.Material) {
   const la = new THREE.Mesh(armGeo, material); la.position.set(-.255, 1.04, 0); la.rotation.z = -.08; const ra = la.clone(); ra.position.x = .255; ra.rotation.z = .08;
   g.add(body, head, ll, rl, la, ra); g.traverse(o => { if (o instanceof THREE.Mesh) o.castShadow = true }); return g;
 }
-function makePanel(panelMat: THREE.Material, frameMat: THREE.Material, width: number, height: number) {
-  const g = new THREE.Group(), panel = new THREE.Mesh(new THREE.BoxGeometry(width, height, .08), panelMat); panel.position.y = height / 2; g.add(panel);
+function makePanel(panelMat: THREE.Material, frameMat: THREE.Material, width: number, height: number, style: BackdropStyle) {
+  const g = new THREE.Group();
+  if (style === "fence") {
+    const inset = Math.min(.05, width * .08), picketCount = Math.max(4, Math.round(width / .14)), usableWidth = Math.max(.1, width - inset * 2), spacing = usableWidth / (picketCount - 1), picketWidth = Math.min(.065, spacing * .48);
+    const picketGeo = new THREE.BoxGeometry(picketWidth, height, .08);
+    for (let i = 0; i < picketCount; i++) { const picket = new THREE.Mesh(picketGeo, panelMat); picket.position.set(-usableWidth / 2 + i * spacing, height / 2, 0); g.add(picket) }
+    const railGeo = new THREE.BoxGeometry(width, Math.min(.09, height * .07), .1);
+    [height * .34, height * .72].forEach(y => { const rail = new THREE.Mesh(railGeo, panelMat); rail.position.set(0, y, .015); g.add(rail) });
+  } else {
+    const panel = new THREE.Mesh(new THREE.BoxGeometry(width, height, .08), panelMat); panel.position.y = height / 2; g.add(panel);
+  }
   const sideGeo = new THREE.BoxGeometry(.045, height, .12), left = new THREE.Mesh(sideGeo, frameMat); left.position.set(-width / 2 + .0225, height / 2, 0); const right = left.clone(); right.position.x *= -1;
   const footGeo = new THREE.BoxGeometry(Math.min(.28, width * .45), .06, BACKDROP_DEPTH), lf = new THREE.Mesh(footGeo, frameMat); lf.position.set(-width * .32, .03, .08); const rf = lf.clone(); rf.position.x *= -1;
   const wheelGeo = new THREE.CylinderGeometry(.045, .045, .035, 10), lw = new THREE.Mesh(wheelGeo, frameMat); lw.position.set(-width * .32, .045, .18); lw.rotation.x = Math.PI / 2; const rw = lw.clone(); rw.position.x *= -1;
@@ -208,10 +219,10 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     layout.people.forEach(p => { let g = peopleRef.current.get(p.id); if (!g) { g = makePerson(mat); g.userData.selection = { kind: "person", id: p.id } satisfies Selection; scene.add(g); peopleRef.current.set(p.id, g) } g.position.set(p.x, 0, p.z); g.rotation.y = THREE.MathUtils.degToRad(p.rotation); g.scale.setScalar(p.heightCm / 100 / PERSON_HEIGHT); g.visible = p.visible });
   }, [layout.people]);
   useEffect(() => {
-    const scene = sceneRef.current, mats = backdropMatsRef.current; if (!scene || !mats) return; const b = layout.backdrop, spec = `${b.count}-${b.widthCm}-${b.heightCm}-${b.gapCm}`; let g = backdropRef.current;
+    const scene = sceneRef.current, mats = backdropMatsRef.current; if (!scene || !mats) return; const b = layout.backdrop, spec = `${b.style}-${b.count}-${b.widthCm}-${b.heightCm}-${b.gapCm}`; let g = backdropRef.current;
     if (mats.panel instanceof THREE.MeshBasicMaterial) mats.panel.color.set(b.color);
     if (!g) { g = new THREE.Group(); g.userData.selection = { kind: "backdrop" } satisfies Selection; scene.add(g); backdropRef.current = g }
-    if (backdropSpecRef.current !== spec) { while (g.children.length) g.children.pop()?.traverse(o => { if (o instanceof THREE.Mesh) o.geometry.dispose() }); const width = b.widthCm / 100, height = b.heightCm / 100, gap = b.gapCm / 100, total = b.count * width + (b.count - 1) * gap; for (let i = 0; i < b.count; i++) { const panel = makePanel(mats.panel, mats.frame, width, height); panel.position.x = -total / 2 + width / 2 + i * (width + gap); g.add(panel) } backdropSpecRef.current = spec }
+    if (backdropSpecRef.current !== spec) { while (g.children.length) g.children.pop()?.traverse(o => { if (o instanceof THREE.Mesh) o.geometry.dispose() }); const width = b.widthCm / 100, height = b.heightCm / 100, gap = b.gapCm / 100, total = b.count * width + (b.count - 1) * gap; for (let i = 0; i < b.count; i++) { const panel = makePanel(mats.panel, mats.frame, width, height, b.style); panel.position.x = -total / 2 + width / 2 + i * (width + gap); g.add(panel) } backdropSpecRef.current = spec }
     g.position.set(b.x, 0, b.z); g.rotation.y = THREE.MathUtils.degToRad(b.rotation); g.visible = b.visible;
   }, [layout.backdrop]);
   useEffect(() => { if (selection.kind === "person" && !layout.people.some(p => p.id === selection.id)) setSelection({ kind: "backdrop" }) }, [layout.people, selection]);
@@ -297,6 +308,7 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
           <div><strong>背板列調整</strong><span>整列共同移動與旋轉</span></div>
           <label className="stage3d-visible-check"><input type="checkbox" checked={layout.backdrop.visible} onChange={e => updateBackdrop({ visible: e.target.checked })} />顯示</label>
         </div>
+        <label className="stage3d-backdrop-type"><span>物件類型</span><select value={layout.backdrop.style} onChange={e => { const style = e.target.value as BackdropStyle; updateBackdrop(style === "fence" ? { style, widthCm: 112, heightCm: 202 } : { style, widthCm: 122, heightCm: 252 }) }}><option value="solid">實心背板</option><option value="fence">柵欄</option></select></label>
         <div className="stage3d-backdrop-fields">
           <label><span>片數</span><input type="number" min="1" max="30" value={layout.backdrop.count} onChange={e => updateBackdrop({ count: +e.target.value })} /></label>
           <label><span>單片寬</span><div><input type="number" min="30" max="500" value={layout.backdrop.widthCm} onChange={e => updateBackdrop({ widthCm: +e.target.value })} /><b>cm</b></div></label>
