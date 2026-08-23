@@ -244,7 +244,7 @@ function StageCanvas({
 }) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const [fittedSize, setFittedSize] = useState<{ width: number; height: number } | null>(null);
-  const lastPointer = useRef<{ x: number; y: number } | null>(null);
+  const lastPointer = useRef<{ x: number; y: number; startX: number; startY: number; axis: "x" | "y" | null } | null>(null);
   const transformRef = useRef(image.transform);
   transformRef.current = image.transform;
 
@@ -272,7 +272,7 @@ function StageCanvas({
 
   function pointerDown(event: PointerEvent<HTMLDivElement>) {
     if (!interactive) return;
-    lastPointer.current = { x: event.clientX, y: event.clientY };
+    lastPointer.current = { x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, axis: null };
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
@@ -280,13 +280,20 @@ function StageCanvas({
     const last = lastPointer.current;
     const element = canvasRef.current;
     if (!interactive || !last || !element || !onTransform) return;
+    if (event.shiftKey && !last.axis) {
+      const totalX = Math.abs(event.clientX - last.startX), totalY = Math.abs(event.clientY - last.startY);
+      if (Math.max(totalX, totalY) >= 3) last.axis = totalX >= totalY ? "x" : "y";
+    } else if (!event.shiftKey) last.axis = null;
+    const deltaX = last.axis === "y" ? 0 : event.clientX - last.x;
+    const deltaY = last.axis === "x" ? 0 : event.clientY - last.y;
     const next = {
       ...transformRef.current,
-      x: transformRef.current.x + ((event.clientX - last.x) / element.clientWidth) * 100,
-      y: transformRef.current.y + ((event.clientY - last.y) / element.clientHeight) * 100,
+      x: transformRef.current.x + (deltaX / element.clientWidth) * 100,
+      y: transformRef.current.y + (deltaY / element.clientHeight) * 100,
     };
     transformRef.current = next;
-    lastPointer.current = { x: event.clientX, y: event.clientY };
+    last.x = event.clientX;
+    last.y = event.clientY;
     onTransform(next);
   }
 
@@ -406,6 +413,7 @@ export default function Home() {
   const [dragOverCompareId, setDragOverCompareId] = useState<string | null>(null);
   const [storageText, setStorageText] = useState("本機儲存");
   const [toast, setToast] = useState("");
+  const [singleControlsCollapsed, setSingleControlsCollapsed] = useState(() => localStorage.getItem("stage-view-single-controls-collapsed") === "1");
   const [adjustmentsCollapsed, setAdjustmentsCollapsed] = useState(() => localStorage.getItem("stage-view-adjustments-collapsed") === "1");
   const [offlineState, setOfflineState] = useState<OfflineState>(() => localStorage.getItem(OFFLINE_DISABLED_KEY) === "1" ? "disabled" : navigator.onLine ? "preparing" : "offline");
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
@@ -438,6 +446,10 @@ export default function Home() {
   useEffect(() => {
     localStorage.setItem("stage-view-adjustments-collapsed", adjustmentsCollapsed ? "1" : "0");
   }, [adjustmentsCollapsed]);
+
+  useEffect(() => {
+    localStorage.setItem("stage-view-single-controls-collapsed", singleControlsCollapsed ? "1" : "0");
+  }, [singleControlsCollapsed]);
 
   useEffect(() => {
     const offlineDisabled = localStorage.getItem(OFFLINE_DISABLED_KEY) === "1";
@@ -724,13 +736,26 @@ export default function Home() {
     if (activeImage) updateTransform(activeImage.id, { ...DEFAULT_TRANSFORM });
   }
 
-  function alignActive(alignment: "center" | FitMode) {
-    if (!activeImage) return;
-    if (alignment === "center") {
-      updateTransform(activeImage.id, { ...activeImage.transform, x: 0, y: 0 });
-      return;
-    }
-    updateTransform(activeImage.id, { ...activeImage.transform, fit: alignment, scale: 100 });
+  async function alignActive(alignment: "left" | "right" | "top" | "bottom" | "center") {
+    const image = activeImage;
+    if (!image) return;
+    if (alignment === "center") return updateTransform(image.id, { ...image.transform, x: 0, y: 0 });
+    const source = await loadHtmlImage(image.url);
+    const baseScale = image.transform.fit === "height"
+      ? PROJECTION_FRAME_HEIGHT / source.naturalHeight
+      : PROJECTION_FRAME_WIDTH / source.naturalWidth;
+    const scale = baseScale * image.transform.scale / 100;
+    const width = source.naturalWidth * scale, height = source.naturalHeight * scale;
+    const next = { ...image.transform };
+    if (alignment === "left") next.x = ((width - PROJECTION_FRAME_WIDTH) / 2 / STAGE_CANVAS_WIDTH) * 100;
+    if (alignment === "right") next.x = ((PROJECTION_FRAME_WIDTH - width) / 2 / STAGE_CANVAS_WIDTH) * 100;
+    if (alignment === "top") next.y = ((height - PROJECTION_FRAME_HEIGHT) / 2 / STAGE_CANVAS_HEIGHT) * 100;
+    if (alignment === "bottom") next.y = ((PROJECTION_FRAME_HEIGHT - height) / 2 / STAGE_CANVAS_HEIGHT) * 100;
+    updateTransform(image.id, next);
+  }
+
+  function fillActive(fit: FitMode) {
+    if (activeImage) updateTransform(activeImage.id, { ...activeImage.transform, fit, scale: 100 });
   }
 
   function resetAdjustments() {
@@ -1056,7 +1081,7 @@ export default function Home() {
           </div>
 
           {viewMode === "single" ? (
-            <div className="single-view">
+            <div className={`single-view ${activeImage && !singleControlsCollapsed ? "controls-open" : ""}`}>
               <div className="canvas-wrap">
                 {activeImage ? (
                   <StageCanvas image={activeImage} interactive fitContainer onTransform={(transform) => updateTransform(activeImage.id, transform)} />
@@ -1067,13 +1092,22 @@ export default function Home() {
                 )}
               </div>
 
-              {activeImage && (
+              {activeImage && singleControlsCollapsed && <button className="single-panel-open" onClick={() => setSingleControlsCollapsed(false)}>‹ 展開圖片控制</button>}
+              {activeImage && !singleControlsCollapsed && (
                 <div className="editor-panel">
-                  <div className="control-row">
+                  <div className="editor-panel-title"><div><strong>圖片調整</strong><span>位置、尺寸與畫面效果</span></div><button onClick={() => setSingleControlsCollapsed(true)}>收合 ›</button></div>
+                  <section className="single-control-section">
+                    <strong className="single-section-title">縮放</strong>
                     <div className="range-control scale-control"><label>縮放 <b>{activeImage.transform.scale}%</b></label><input aria-label="圖片縮放，雙擊重設為 100%" title="雙擊回到 100%" type="range" min="40" max="220" value={activeImage.transform.scale} onDoubleClick={() => updateTransform(activeImage.id, { ...activeImage.transform, scale: 100 })} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, scale: Number(e.target.value) })} /></div>
-                    <div className="fit-control alignment-control"><label>快速對齊</label><div><button onClick={() => alignActive("center")}>置中</button><button className={activeImage.transform.fit === "width" ? "active" : ""} onClick={() => alignActive("width")}>左右填滿</button><button className={activeImage.transform.fit === "height" ? "active" : ""} onClick={() => alignActive("height")}>上下填滿</button></div></div>
-                    <button className="secondary" onClick={resetActive}>重設</button>
-                  </div>
+                  </section>
+                  <section className="single-control-section">
+                    <strong className="single-section-title">快速對齊</strong>
+                    <div className="alignment-grid"><button onClick={() => void alignActive("left")}>靠左</button><button onClick={() => void alignActive("right")}>靠右</button><button onClick={() => void alignActive("top")}>靠上</button><button onClick={() => void alignActive("bottom")}>靠下</button><button className="center" onClick={() => void alignActive("center")}>置中對齊</button></div>
+                  </section>
+                  <section className="single-control-section">
+                    <strong className="single-section-title">填滿方式</strong>
+                    <div className="fill-grid"><button className={activeImage.transform.fit === "width" ? "active" : ""} onClick={() => fillActive("width")}>左右填滿</button><button className={activeImage.transform.fit === "height" ? "active" : ""} onClick={() => fillActive("height")}>上下填滿</button></div>
+                  </section>
                   <div className={`image-adjustments ${adjustmentsCollapsed ? "collapsed" : ""}`}>
                     <button className="image-adjustments-toggle" aria-expanded={!adjustmentsCollapsed} onClick={() => setAdjustmentsCollapsed((current) => !current)}>
                       <span><strong>畫面調整</strong><small>亮度、對比、飽和度與色調</small></span><b>{adjustmentsCollapsed ? "展開 ▾" : "收合 ▴"}</b>
@@ -1099,8 +1133,9 @@ export default function Home() {
                       placeholder="雙擊新增備註，例如：第二幕／暖色版本／導演首選"
                       onSave={(note) => patchImage(activeImage.id, { note })}
                     />
-                    <span>直接拖曳舞台中的圖片可調整位置</span>
+                    <span>拖曳圖片可調整位置；按住 Shift 可鎖定水平或垂直方向。</span>
                   </div>
+                  <button className="secondary single-reset-all" onClick={resetActive}>重設全部圖片調整</button>
                 </div>
               )}
             </div>
