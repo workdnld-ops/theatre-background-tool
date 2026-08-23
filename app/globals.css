@@ -194,6 +194,10 @@ h3 { font-size: 18px; }
 .stage3d-objects-title span { color: #8f918f; font-size: 12px; }
 .stage3d-objects-title button, .stage3d-object-picker > button { border: 1px solid #ffffff1c; border-radius: 7px; background: #ffffff0c; color: #eeeae4; padding: 6px 8px; font-size: 12px; font-weight: 900; }
 .stage3d-objects-title button:hover, .stage3d-object-picker > button:hover { background: #ffffff18; }
+.stage3d-layout-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 0 0 8px; border-bottom: 1px solid #ffffff12; }
+.stage3d-layout-actions button { border: 1px solid #ffffff1c; border-radius: 7px; background: #ffffff0c; color: #eeeae4; padding: 7px 5px; font-size: 12px; font-weight: 900; }
+.stage3d-layout-actions button:hover:not(:disabled) { border-color: #dc7655aa; background: #dc76551c; }
+.stage3d-layout-actions button:disabled { opacity: .38; cursor: default; }
 .stage3d-control-section { margin-top: 10px; padding: 10px; border: 1px solid #ffffff17; border-radius: 10px; background: #ffffff07; transition: border-color .15s ease, background .15s ease; }
 .stage3d-control-section.active { border-color: #d86b48aa; background: #d86b480d; box-shadow: inset 3px 0 0 #d86b48; }
 .stage3d-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }

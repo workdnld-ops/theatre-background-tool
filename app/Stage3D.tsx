@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
@@ -17,7 +17,8 @@ type Legacy = { peopleVisible?: boolean; personHeightCm?: number; backdrop252Vis
 const STAGE = { width: 27, openingWidth: 15.42, openingHeight: 8.5, apronDepth: 2.6, depth: 18.81, cycloramaDepth: 10.65 };
 const INNER = 6.6, LEG_WIDTH = STAGE.openingWidth / 2 - INNER, SCREEN_WIDTH = INNER * 2, SCREEN_HEIGHT = SCREEN_WIDTH * 9 / 16;
 const LEG_DEPTHS = [1.1, 3.05, 5, 6.95, 8.9], LINE_GAP = .92, LINE_COUNT = 12, PERSON_HEIGHT = 1.7, MAX_PEOPLE = 50, BACKDROP_DEPTH = .48;
-const LEGACY_CAMERA_KEY = "stage-view-template-camera-v3", CAMERA_KEY_PREFIX = "stage-view-free-camera-v1:", OLD_KEY = "stage-view-objects-v1", LAYOUT_KEY = "stage-view-layout-v2";
+const SELECTION_MARKER_NAME = "selection-marker";
+const LEGACY_CAMERA_KEY = "stage-view-template-camera-v3", CAMERA_KEY_PREFIX = "stage-view-free-camera-v1:", OLD_KEY = "stage-view-objects-v1", LAYOUT_KEY = "stage-view-layout-v2", LAYOUT_KEY_PREFIX = "stage-view-layout-v3:", LAYOUT_CLIPBOARD_KEY = "stage-view-layout-clipboard-v1";
 const DEFAULT_PEOPLE: Person[] = [
   ["person-1", -5, 3.2, -10], ["person-2", -4.15, 5.8, 7], ["person-3", -1.25, 4.2, -5],
   ["person-4", 1.25, 4.2, 5], ["person-5", 4.15, 5.8, -7], ["person-6", 5, 3.2, 10],
@@ -79,6 +80,7 @@ function clampBackdrop(b: Backdrop) { const e = backdropExtent(b); return { ...b
 function clampPerson(p: Person) { const r = .32 * p.heightCm / 170; return { ...p, x: round(clamp(p.x, -13.5 + r, 13.5 - r)), z: round(clamp(p.z, r, STAGE.depth - r)) } }
 
 function cameraKey(image?: ProjectionImage | null) { return `${CAMERA_KEY_PREFIX}${image?.id ?? "default"}` }
+function objectLayoutKey(image?: ProjectionImage | null) { return `${LAYOUT_KEY_PREFIX}${image?.id ?? "default"}` }
 function readCamera(key: string): CameraPose | null {
   try {
     const raw = localStorage.getItem(key) ?? localStorage.getItem(LEGACY_CAMERA_KEY);
@@ -86,23 +88,22 @@ function readCamera(key: string): CameraPose | null {
     return v && typeof v.fov === "number" && validTuple(v.position) && validTuple(v.target) ? { fov: v.fov, position: v.position, target: v.target } : null;
   } catch { return null }
 }
-function readLayout(): Layout {
-  try {
-    const v = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "null") as { version?: number; people?: Partial<Person>[]; backdrop?: Partial<Backdrop> } | null;
-    if ((v?.version === 2 || v?.version === 3 || v?.version === 4 || v?.version === 5 || v?.version === 6) && Array.isArray(v.people) && v.backdrop) {
-      const seen = new Set<string>();
-      const people = v.people.slice(0, MAX_PEOPLE).map((p, i) => {
-        const fallback = DEFAULT_PEOPLE[i] ?? { ...DEFAULT_PEOPLE[0], id: `person-${i + 1}`, x: 0, z: 3.2 };
-        const next = cleanPerson(p, fallback);
-        while (seen.has(next.id)) next.id += `-${i + 1}`;
-        seen.add(next.id); return next;
-      });
-      const backdrop = cleanBackdrop(v.backdrop);
-      if (v.version === 2 && backdrop.gapCm === 20) backdrop.gapCm = 0;
-      if (v.version === 5 && backdrop.style === "fence" && backdrop.color.toLowerCase() === DEFAULT_BACKDROP.color) backdrop.color = FENCE_DEFAULT_COLOR;
-      return { version: 6, people, backdrop: clampBackdrop(backdrop) };
-    }
-  } catch { /* migrate below */ }
+function normalizeLayout(value: unknown): Layout | null {
+  const v = value as { version?: number; people?: Partial<Person>[]; backdrop?: Partial<Backdrop> } | null;
+  if (!v || ![2, 3, 4, 5, 6].includes(v.version ?? 0) || !Array.isArray(v.people) || !v.backdrop) return null;
+  const seen = new Set<string>();
+  const people = v.people.slice(0, MAX_PEOPLE).map((p, i) => {
+    const fallback = DEFAULT_PEOPLE[i] ?? { ...DEFAULT_PEOPLE[0], id: `person-${i + 1}`, x: 0, z: 3.2 }, next = cleanPerson(p, fallback);
+    while (seen.has(next.id)) next.id += `-${i + 1}`;
+    seen.add(next.id); return next;
+  });
+  const backdrop = cleanBackdrop(v.backdrop);
+  if (v.version === 2 && backdrop.gapCm === 20) backdrop.gapCm = 0;
+  if (v.version === 5 && backdrop.style === "fence" && backdrop.color.toLowerCase() === DEFAULT_BACKDROP.color) backdrop.color = FENCE_DEFAULT_COLOR;
+  return { version: 6, people, backdrop: clampBackdrop(backdrop) };
+}
+function readLayout(storageKey: string): Layout {
+  try { const stored = localStorage.getItem(storageKey) ?? localStorage.getItem(LAYOUT_KEY), normalized = normalizeLayout(JSON.parse(stored || "null")); if (normalized) return normalized } catch { /* migrate below */ }
   const next = copyDefaults();
   try {
     const old = JSON.parse(localStorage.getItem(OLD_KEY) || "null") as Legacy | null;
@@ -131,7 +132,7 @@ function box(parent: THREE.Object3D, size: [number, number, number], position: [
 function instancedBoxes(parent: THREE.Object3D, size: [number, number, number], positions: [number, number, number][], material: THREE.Material, cast = false) {
   const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(...size), material, positions.length), matrix = new THREE.Matrix4(); positions.forEach((position, i) => { matrix.makeTranslation(...position); mesh.setMatrixAt(i, matrix) }); mesh.castShadow = cast; parent.add(mesh); return mesh;
 }
-function makePerson(material: THREE.Material) {
+function makePerson(material: THREE.Material, markerMaterial: THREE.Material) {
   const part = (geometry: THREE.BufferGeometry, x: number, y: number, z = 0, rotationZ = 0) => { if (rotationZ) geometry.rotateZ(rotationZ); geometry.translate(x, y, z); return geometry };
   const parts = [
     part(new THREE.CapsuleGeometry(.2, .68, 3, 6), 0, .98), part(new THREE.SphereGeometry(.16, 8, 6), 0, 1.54),
@@ -139,7 +140,8 @@ function makePerson(material: THREE.Material) {
     part(new THREE.CylinderGeometry(.055, .07, .68, 6), -.255, 1.04, 0, -.08), part(new THREE.CylinderGeometry(.055, .07, .68, 6), .255, 1.04, 0, .08),
   ];
   const geometry = mergeGeometries(parts, false); parts.forEach(g => g.dispose());
-  const group = new THREE.Group(); if (geometry) { const mesh = new THREE.Mesh(geometry, material); mesh.castShadow = true; group.add(mesh) } return group;
+  const group = new THREE.Group(); if (geometry) { const mesh = new THREE.Mesh(geometry, material); mesh.castShadow = true; group.add(mesh) }
+  const marker = new THREE.Mesh(new THREE.RingGeometry(.28, .35, 24), markerMaterial); marker.name = SELECTION_MARKER_NAME; marker.rotation.x = -Math.PI / 2; marker.position.y = .025; marker.renderOrder = 8; marker.visible = false; group.add(marker); return group;
 }
 function makePanel(panelMat: THREE.Material, frameMat: THREE.Material, width: number, height: number, style: BackdropStyle) {
   const g = new THREE.Group();
@@ -173,12 +175,14 @@ function projectionTexture(image: ProjectionImage) {
 }
 
 const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image, compact = false, showObjectControls = true, syncId = "main", syncCamera = null, onCameraChange }, ref) {
+  const objectKeyRef = useRef(objectLayoutKey(image));
   const mountRef = useRef<HTMLDivElement>(null), rendererRef = useRef<THREE.WebGLRenderer | null>(null), cameraRef = useRef<THREE.PerspectiveCamera | null>(null), controlsRef = useRef<OrbitControls | null>(null);
-  const sceneRef = useRef<THREE.Scene | null>(null), screenMatRef = useRef<THREE.MeshBasicMaterial | null>(null), textureRef = useRef<THREE.Texture | null>(null), personMatRef = useRef<THREE.Material | null>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null), screenMatRef = useRef<THREE.MeshBasicMaterial | null>(null), textureRef = useRef<THREE.Texture | null>(null), personMatRef = useRef<THREE.Material | null>(null), markerMatRef = useRef<THREE.Material | null>(null);
   const backdropMatsRef = useRef<{ panel: THREE.Material; frame: THREE.Material } | null>(null), peopleRef = useRef(new Map<string, THREE.Group>()), backdropRef = useRef<THREE.Group | null>(null), backdropSpecRef = useRef("");
-  const boxRef = useRef<{ box: THREE.Box3; helper: THREE.Box3Helper } | null>(null), dragRef = useRef<DragState | null>(null), renderRef = useRef<() => void>(() => {}), timerRef = useRef<number | null>(null), applyingSyncRef = useRef(false), onCameraChangeRef = useRef(onCameraChange);
-  const [preset, setPreset] = useState<PresetName>("自由視角"), [layout, setLayout] = useState<Layout>(readLayout), [selection, setSelection] = useState<Selection>({ kind: "backdrop" }), [error, setError] = useState(""), [notice, setNotice] = useState("");
+  const dragRef = useRef<DragState | null>(null), renderRef = useRef<() => void>(() => {}), flashSelectionRef = useRef<(duration?: number) => void>(() => {}), markerVisibleRef = useRef(false), visibleMarkersRef = useRef<THREE.Object3D[]>([]), markerTimerRef = useRef<number | null>(null), timerRef = useRef<number | null>(null), applyingSyncRef = useRef(false), onCameraChangeRef = useRef(onCameraChange);
+  const [preset, setPreset] = useState<PresetName>("自由視角"), [layout, setLayout] = useState<Layout>(() => readLayout(objectKeyRef.current)), [selection, setSelection] = useState<Selection>({ kind: "backdrop" }), [error, setError] = useState(""), [notice, setNotice] = useState("");
   const [controlsCollapsed, setControlsCollapsed] = useState(() => localStorage.getItem("stage3d-controls-collapsed") === "1");
+  const [clipboardReady, setClipboardReady] = useState(() => { try { return Boolean(localStorage.getItem(LAYOUT_CLIPBOARD_KEY)) } catch { return false } });
   const [activePersonId, setActivePersonId] = useState(() => layout.people[0]?.id ?? "");
   const [selectedPersonIds, setSelectedPersonIds] = useState<string[]>([]);
   const layoutRef = useRef(layout), selectionRef = useRef(selection), selectedPersonIdsRef = useRef(selectedPersonIds), cameraKeyRef = useRef(cameraKey(image)); layoutRef.current = layout; selectionRef.current = selection; selectedPersonIdsRef.current = selectedPersonIds; cameraKeyRef.current = cameraKey(image);
@@ -193,7 +197,8 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     return { ...current, backdrop: clampBackdrop(candidate) };
   });
 
-  useEffect(() => { try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)) } catch { /* optional */ } }, [layout]);
+  useLayoutEffect(() => { const nextKey = objectLayoutKey(image); if (nextKey === objectKeyRef.current) return; objectKeyRef.current = nextKey; const next = readLayout(nextKey); setLayout(next); setActivePersonId(next.people[0]?.id ?? ""); setSelectedPersonIds([]); setSelection({ kind: "backdrop" }) }, [image?.id]);
+  useEffect(() => { try { localStorage.setItem(objectKeyRef.current, JSON.stringify(layout)) } catch { /* optional */ } }, [layout]);
   useEffect(() => { if (showObjectControls) try { localStorage.setItem("stage3d-controls-collapsed", controlsCollapsed ? "1" : "0") } catch { /* optional */ } }, [controlsCollapsed, showObjectControls]);
   useEffect(() => {
     const mount = mountRef.current; if (!mount) return; let frame = 0, renderer: THREE.WebGLRenderer;
@@ -202,13 +207,14 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     const scene = new THREE.Scene(); scene.background = new THREE.Color(0x070809); sceneRef.current = scene;
     const pose = readCamera(cameraKeyRef.current) ?? TEMPLATE_CAMERA, camera = new THREE.PerspectiveCamera(pose.fov, 16 / 9, .1, 180); camera.position.set(...pose.position); cameraRef.current = camera;
     const controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = false; controls.target.set(...pose.target); controls.minDistance = 2.5; controls.maxDistance = 140; controls.maxPolarAngle = Math.PI * .92; controls.update(); controlsRef.current = controls;
-    const draw = () => { const s = selectionRef.current, objects = s.kind === "backdrop" ? [backdropRef.current] : selectedPersonIdsRef.current.map(id => peopleRef.current.get(id)), visible = objects.filter((o): o is THREE.Group => Boolean(o?.visible)); if (boxRef.current) { boxRef.current.helper.visible = showObjectControls && visible.length > 0; if (showObjectControls && visible.length) { boxRef.current.box.makeEmpty(); visible.forEach(o => boxRef.current?.box.expandByObject(o)) } } renderer.render(scene, camera) };
+    const draw = () => { visibleMarkersRef.current.forEach(marker => { marker.visible = false }); visibleMarkersRef.current = []; if (showObjectControls && markerVisibleRef.current) { const s = selectionRef.current; if (s.kind === "backdrop") { const marker = backdropRef.current?.getObjectByName(SELECTION_MARKER_NAME); if (marker && backdropRef.current?.visible) { marker.visible = true; visibleMarkersRef.current.push(marker) } } else selectedPersonIdsRef.current.forEach(id => { const group = peopleRef.current.get(id), marker = group?.getObjectByName(SELECTION_MARKER_NAME); if (marker && group?.visible) { marker.visible = true; visibleMarkersRef.current.push(marker) } }) } renderer.render(scene, camera) };
     const requestRender = () => { if (frame) return; frame = requestAnimationFrame(() => { frame = 0; draw() }) }; renderRef.current = requestRender;
+    const flashSelection = (duration = 900) => { markerVisibleRef.current = true; if (markerTimerRef.current) clearTimeout(markerTimerRef.current); requestRender(); if (duration > 0) markerTimerRef.current = window.setTimeout(() => { if (!dragRef.current) { markerVisibleRef.current = false; requestRender() } }, duration) }; flashSelectionRef.current = flashSelection;
     const emitCamera = () => { requestRender(); if (!applyingSyncRef.current) onCameraChangeRef.current?.(syncId, currentPose(camera, controls)) };
     const remember = () => { if (!dragRef.current) { writeCamera(cameraKeyRef.current, camera, controls); setPreset("自由視角") } };
     controls.addEventListener("change", emitCamera); controls.addEventListener("end", remember);
     scene.add(new THREE.HemisphereLight(0x9cb5ca, 0x19120f, 1.1)); const key = new THREE.SpotLight(0xffe4c5, 760, 52, Math.PI / 4.5, .42, 1.4); key.position.set(-5, 15, -5); key.target.position.set(0, 0, 7); key.castShadow = true; key.shadow.mapSize.set(1024, 1024); scene.add(key, key.target); const fill = new THREE.DirectionalLight(0x8aa9d7, 1.6); fill.position.set(7, 9, -8); scene.add(fill);
-    const black = lit(0x090909, .92), curtain = lit(0x050505, 1), floor = lit(0x3b3936, .88), apron = lit(0x3c241b, .9), frameMat = lit(0xaaa5ba, .35, .2), line = lit(0xc8c3ba, .82); personMatRef.current = lit(0x747678, .72, .05); backdropMatsRef.current = { panel: unlit(0x765548), frame: unlit(0x2b2927) };
+    const black = lit(0x090909, .92), curtain = lit(0x050505, 1), floor = lit(0x3b3936, .88), apron = lit(0x3c241b, .9), frameMat = lit(0xaaa5ba, .35, .2), line = lit(0xc8c3ba, .82); personMatRef.current = lit(0x747678, .72, .05); markerMatRef.current = new THREE.MeshBasicMaterial({ color: 0xff754c, transparent: true, opacity: .82, toneMapped: false, depthWrite: false }); backdropMatsRef.current = { panel: unlit(0x765548), frame: unlit(0x2b2927) };
     box(scene, [27, .24, STAGE.depth], [0, -.12, STAGE.depth / 2], floor);
     const shape = new THREE.Shape(); shape.moveTo(-9.1, 0); shape.lineTo(9.1, 0); shape.quadraticCurveTo(0, STAGE.apronDepth * 2, -9.1, 0); const apronMesh = new THREE.Mesh(new THREE.ShapeGeometry(shape, 48), apron); apronMesh.rotation.x = -Math.PI / 2; apronMesh.position.y = -.14; scene.add(apronMesh);
     instancedBoxes(scene, [27, .025, .035], Array.from({ length: LINE_COUNT }, (_, i) => [0, .02, i * LINE_GAP] as [number, number, number]), line);
@@ -222,37 +228,36 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     box(scene, [27, 10.5, .28], [0, 5, STAGE.depth], black); box(scene, [.34, 10.5, STAGE.depth + 2.2], [-12.8, 5, 8.3], black); box(scene, [.34, 10.5, STAGE.depth + 2.2], [12.8, 5, 8.3], black);
     const legCenter = INNER + LEG_WIDTH / 2; instancedBoxes(scene, [LEG_WIDTH, 8.5, .13], LEG_DEPTHS.flatMap(z => [[-legCenter, 4.25, z], [legCenter, 4.25, z]] as [number, number, number][]), curtain, true);
     const screenMat = new THREE.MeshBasicMaterial({ color: 0x25282d, side: THREE.DoubleSide, toneMapped: false, fog: false }); screenMatRef.current = screenMat; const screen = new THREE.Mesh(new THREE.PlaneGeometry(SCREEN_WIDTH, SCREEN_HEIGHT), screenMat); screen.position.set(0, SCREEN_HEIGHT / 2, STAGE.cycloramaDepth); screen.rotation.y = Math.PI; scene.add(screen); box(scene, [STAGE.openingWidth, STAGE.openingHeight - SCREEN_HEIGHT, .12], [0, SCREEN_HEIGHT + (STAGE.openingHeight - SCREEN_HEIGHT) / 2, STAGE.cycloramaDepth + .04], black);
-    const selectionBox = new THREE.Box3(), helper = new THREE.Box3Helper(selectionBox, 0xff6f42); helper.visible = false; helper.renderOrder = 10; scene.add(helper); boxRef.current = { box: selectionBox, helper };
     const ray = new THREE.Raycaster(), pointer = new THREE.Vector2(), plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     const setRay = (e: PointerEvent) => { const r = renderer.domElement.getBoundingClientRect(); pointer.set((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1); ray.setFromCamera(pointer, camera) };
     const pick = (e: PointerEvent) => { setRay(e); const targets: THREE.Object3D[] = [...peopleRef.current.values()]; if (backdropRef.current) targets.push(backdropRef.current); let o: THREE.Object3D | null = ray.intersectObjects(targets, true)[0]?.object ?? null; while (o) { if (o.userData.selection) return o.userData.selection as Selection; o = o.parent } return null };
     const floorPoint = (e: PointerEvent) => { setRay(e); return ray.ray.intersectPlane(plane, new THREE.Vector3()) };
-    const down = (e: PointerEvent) => { if (!showObjectControls || e.button !== 0) return; const selected = pick(e), point = floorPoint(e); if (!selected || !point) return; if (selected.kind === "backdrop") { const b = layoutRef.current.backdrop; setSelectedPersonIds([]); dragRef.current = { selection: selected, lastX: point.x, lastZ: point.z, x: b.x, z: b.z } } else { const currentIds = selectedPersonIdsRef.current, personIds = e.shiftKey ? Array.from(new Set([...currentIds, selected.id])) : currentIds.includes(selected.id) ? currentIds : [selected.id]; const person = layoutRef.current.people.find(p => p.id === selected.id); if (!person) return; setSelectedPersonIds(personIds); setActivePersonId(selected.id); dragRef.current = { selection: selected, lastX: point.x, lastZ: point.z, x: person.x, z: person.z, personIds } } controls.enabled = false; setSelection(selected); renderer.domElement.setPointerCapture(e.pointerId); e.preventDefault() };
+    const down = (e: PointerEvent) => { if (!showObjectControls || e.button !== 0) return; const selected = pick(e), point = floorPoint(e); if (!selected || !point) return; if (selected.kind === "backdrop") { const b = layoutRef.current.backdrop; setSelectedPersonIds([]); dragRef.current = { selection: selected, lastX: point.x, lastZ: point.z, x: b.x, z: b.z } } else { const currentIds = selectedPersonIdsRef.current, personIds = e.shiftKey ? Array.from(new Set([...currentIds, selected.id])) : currentIds.includes(selected.id) ? currentIds : [selected.id]; const person = layoutRef.current.people.find(p => p.id === selected.id); if (!person) return; setSelectedPersonIds(personIds); setActivePersonId(selected.id); dragRef.current = { selection: selected, lastX: point.x, lastZ: point.z, x: person.x, z: person.z, personIds } } controls.enabled = false; setSelection(selected); flashSelection(0); renderer.domElement.setPointerCapture(e.pointerId); e.preventDefault() };
     const move = (e: PointerEvent) => { const drag = dragRef.current, point = floorPoint(e); if (!drag || !point) return; const dx = point.x - drag.lastX, dz = point.z - drag.lastZ; drag.lastX = point.x; drag.lastZ = point.z; if (drag.selection.kind === "backdrop") { drag.x += dx; drag.z += dz; updateBackdrop({ x: drag.x, z: drag.z }, false) } else movePeopleBy(drag.personIds ?? [drag.selection.id], dx, dz); e.preventDefault() };
-    const up = (e: PointerEvent) => { if (!dragRef.current) return; dragRef.current = null; controls.enabled = true; if (renderer.domElement.hasPointerCapture(e.pointerId)) renderer.domElement.releasePointerCapture(e.pointerId); e.preventDefault() };
+    const up = (e: PointerEvent) => { if (!dragRef.current) return; dragRef.current = null; controls.enabled = true; flashSelection(550); if (renderer.domElement.hasPointerCapture(e.pointerId)) renderer.domElement.releasePointerCapture(e.pointerId); e.preventDefault() };
     renderer.domElement.addEventListener("pointerdown", down, true); renderer.domElement.addEventListener("pointermove", move, true); renderer.domElement.addEventListener("pointerup", up, true); renderer.domElement.addEventListener("pointercancel", up, true);
     const ro = new ResizeObserver(() => { const s = fit169(Math.max(1, mount.clientWidth), Math.max(1, mount.clientHeight)); renderer.setPixelRatio(renderPixelRatio(s.width, s.height, compact)); renderer.setSize(s.width, s.height, false); camera.aspect = 16 / 9; camera.updateProjectionMatrix(); requestRender() }); ro.observe(mount); requestRender();
-    return () => { cancelAnimationFrame(frame); ro.disconnect(); controls.removeEventListener("change", emitCamera); controls.removeEventListener("end", remember); controls.dispose(); renderRef.current = () => {}; textureRef.current?.dispose(); scene.traverse(o => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose()) } }); renderer.dispose(); renderer.domElement.remove(); rendererRef.current = cameraRef.current = controlsRef.current = sceneRef.current = screenMatRef.current = personMatRef.current = backdropMatsRef.current = boxRef.current = null; peopleRef.current.clear(); backdropRef.current = null };
+    return () => { cancelAnimationFrame(frame); if (markerTimerRef.current) clearTimeout(markerTimerRef.current); ro.disconnect(); controls.removeEventListener("change", emitCamera); controls.removeEventListener("end", remember); controls.dispose(); renderRef.current = () => {}; flashSelectionRef.current = () => {}; visibleMarkersRef.current = []; textureRef.current?.dispose(); scene.traverse(o => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose()) } }); renderer.dispose(); renderer.domElement.remove(); rendererRef.current = cameraRef.current = controlsRef.current = sceneRef.current = screenMatRef.current = personMatRef.current = markerMatRef.current = backdropMatsRef.current = null; peopleRef.current.clear(); backdropRef.current = null };
   }, []);
 
   useEffect(() => {
-    const scene = sceneRef.current, mat = personMatRef.current; if (!scene || !mat) return; const ids = new Set(layout.people.map(p => p.id));
+    const scene = sceneRef.current, mat = personMatRef.current, markerMat = markerMatRef.current; if (!scene || !mat || !markerMat) return; const ids = new Set(layout.people.map(p => p.id));
     peopleRef.current.forEach((g, id) => { if (!ids.has(id)) { scene.remove(g); g.traverse(o => { if (o instanceof THREE.Mesh) o.geometry.dispose() }); peopleRef.current.delete(id) } });
-    layout.people.forEach(p => { let g = peopleRef.current.get(p.id); if (!g) { g = makePerson(mat); g.userData.selection = { kind: "person", id: p.id } satisfies Selection; scene.add(g); peopleRef.current.set(p.id, g) } g.position.set(p.x, 0, p.z); g.rotation.y = THREE.MathUtils.degToRad(p.rotation); g.scale.setScalar(p.heightCm / 100 / PERSON_HEIGHT); g.visible = p.visible });
+    layout.people.forEach(p => { let g = peopleRef.current.get(p.id); if (!g) { g = makePerson(mat, markerMat); g.userData.selection = { kind: "person", id: p.id } satisfies Selection; scene.add(g); peopleRef.current.set(p.id, g) } g.position.set(p.x, 0, p.z); g.rotation.y = THREE.MathUtils.degToRad(p.rotation); g.scale.setScalar(p.heightCm / 100 / PERSON_HEIGHT); g.visible = p.visible });
     if (rendererRef.current) rendererRef.current.shadowMap.needsUpdate = true;
     renderRef.current();
   }, [layout.people]);
   useEffect(() => {
-    const scene = sceneRef.current, mats = backdropMatsRef.current; if (!scene || !mats) return; const b = layout.backdrop, spec = `${b.style}-${b.count}-${b.widthCm}-${b.heightCm}-${b.gapCm}`; let g = backdropRef.current;
+    const scene = sceneRef.current, mats = backdropMatsRef.current, markerMat = markerMatRef.current; if (!scene || !mats || !markerMat) return; const b = layout.backdrop, spec = `${b.style}-${b.count}-${b.widthCm}-${b.heightCm}-${b.gapCm}`; let g = backdropRef.current;
     if (mats.panel instanceof THREE.MeshBasicMaterial) mats.panel.color.set(b.color);
     if (!g) { g = new THREE.Group(); g.userData.selection = { kind: "backdrop" } satisfies Selection; scene.add(g); backdropRef.current = g }
-    if (backdropSpecRef.current !== spec) { while (g.children.length) g.children.pop()?.traverse(o => { if (o instanceof THREE.Mesh) o.geometry.dispose() }); const width = b.widthCm / 100, height = b.heightCm / 100, gap = b.gapCm / 100, total = b.count * width + (b.count - 1) * gap; for (let i = 0; i < b.count; i++) { const panel = makePanel(mats.panel, mats.frame, width, height, b.style); panel.position.x = -total / 2 + width / 2 + i * (width + gap); g.add(panel) } backdropSpecRef.current = spec }
+    if (backdropSpecRef.current !== spec) { while (g.children.length) g.children.pop()?.traverse(o => { if (o instanceof THREE.Mesh) o.geometry.dispose() }); const width = b.widthCm / 100, height = b.heightCm / 100, gap = b.gapCm / 100, total = b.count * width + (b.count - 1) * gap; for (let i = 0; i < b.count; i++) { const panel = makePanel(mats.panel, mats.frame, width, height, b.style); panel.position.x = -total / 2 + width / 2 + i * (width + gap); g.add(panel) } const marker = new THREE.Mesh(new THREE.BoxGeometry(total + .12, .025, .055), markerMat); marker.name = SELECTION_MARKER_NAME; marker.position.set(0, .03, -BACKDROP_DEPTH / 2 - .035); marker.renderOrder = 8; marker.visible = false; g.add(marker); backdropSpecRef.current = spec }
     g.position.set(b.x, 0, b.z); g.rotation.y = THREE.MathUtils.degToRad(b.rotation); g.visible = b.visible;
     if (rendererRef.current) rendererRef.current.shadowMap.needsUpdate = true;
     renderRef.current();
   }, [layout.backdrop]);
   useEffect(() => { const valid = new Set(layout.people.map(p => p.id)), next = selectedPersonIds.filter(id => valid.has(id)); if (next.length !== selectedPersonIds.length) setSelectedPersonIds(next); if (selection.kind === "person" && !valid.has(selection.id)) setSelection({ kind: "backdrop" }) }, [layout.people, selectedPersonIds, selection]);
-  useEffect(() => { renderRef.current() }, [selection, selectedPersonIds]);
+  useEffect(() => { flashSelectionRef.current(900) }, [selection, selectedPersonIds]);
   useEffect(() => { if (!layout.people.some(p => p.id === activePersonId)) setActivePersonId(layout.people[0]?.id ?? "") }, [activePersonId, layout.people]);
   useEffect(() => {
     if (!showObjectControls) return;
@@ -291,6 +296,8 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
   const getCameraPose = () => cameraRef.current && controlsRef.current ? currentPose(cameraRef.current, controlsRef.current) : null;
   const exportView = () => { const data = captureView(); if (!data) return; const a = document.createElement("a"); a.download = `${image?.name || "舞台"}-3D視角.png`; a.href = data; a.click() };
   useImperativeHandle(ref, () => ({ exportView, captureView, getCameraPose }), [image]);
+  const copyObjectLayout = () => { try { localStorage.setItem(LAYOUT_CLIPBOARD_KEY, JSON.stringify(layout)); setClipboardReady(true); showNotice("已複製這張圖片的人物與背板狀態，不包含視角。") } catch { showNotice("物件狀態暫時無法複製。") } };
+  const pasteObjectLayout = () => { try { const copied = normalizeLayout(JSON.parse(localStorage.getItem(LAYOUT_CLIPBOARD_KEY) || "null")); if (!copied) return showNotice("目前沒有可貼上的物件狀態。"); setLayout(copied); setActivePersonId(copied.people[0]?.id ?? ""); setSelectedPersonIds([]); setSelection({ kind: "backdrop" }); showNotice("已貼上人物與背板狀態，這張圖片的視角保持不變。") } catch { showNotice("複製的物件狀態無法讀取。") } };
 
   const addPerson = (source?: Person) => { if (layout.people.length >= MAX_PEOPLE) return showNotice(`人物最多 ${MAX_PEOPLE} 位。`); const id = `person-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, base = source ?? { ...DEFAULT_PEOPLE[0], x: 0, z: 3.2, rotation: 0 }, next = clampPerson({ ...base, id, x: base.x + (source ? .5 : 0) }); setLayout(c => ({ ...c, people: [...c.people, next] })); setActivePersonId(id); setSelectedPersonIds([id]); setSelection({ kind: "person", id }) };
   const deletePerson = (id: string) => { setLayout(c => ({ ...c, people: c.people.filter(p => p.id !== id) })); setSelectedPersonIds([]); setSelection({ kind: "backdrop" }) };
@@ -311,6 +318,7 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     {showObjectControls && controlsCollapsed && <button className="stage3d-panel-open" onClick={() => setControlsCollapsed(false)}>‹ 展開物件控制</button>}
     {showObjectControls && !controlsCollapsed && <div className="stage3d-objects" aria-label="3D 物件調整">
       <div className="stage3d-objects-title"><div><strong>物件調整</strong><span>人物與背板分區控制</span></div><button onClick={() => setControlsCollapsed(true)}>收合 ›</button></div>
+      <div className="stage3d-layout-actions"><button disabled={!image} onClick={copyObjectLayout}>複製物件狀態</button><button disabled={!image || !clipboardReady} onClick={pasteObjectLayout}>貼上物件狀態</button></div>
 
       <section className={`stage3d-control-section person-section ${selection.kind === "person" ? "active" : ""}`} onPointerDown={() => { if (person) { setSelection({ kind: "person", id: person.id }); if (!selectedPersonIds.includes(person.id)) setSelectedPersonIds([person.id]) } }}>
         <div className="stage3d-section-heading">
