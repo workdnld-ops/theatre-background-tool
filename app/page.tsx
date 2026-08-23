@@ -16,6 +16,7 @@ type Transform = {
   contrast: number;
   saturation: number;
   hue: number;
+  temperature: number;
   fit: FitMode;
 };
 type StoredImage = {
@@ -30,6 +31,7 @@ type StoredImage = {
 };
 type LibraryImage = StoredImage & { url: string };
 type Category = { id: string; name: string; createdAt: number };
+type TransformHistory = { past: Transform[]; future: Transform[] };
 type OfflineState = "preparing" | "ready" | "offline" | "disabled";
 interface InstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -40,8 +42,9 @@ const DB_NAME = "stage-view-library";
 const STORE_NAME = "backgrounds";
 const CATEGORY_STORE_NAME = "categories";
 const OFFLINE_DISABLED_KEY = "stage-view-offline-disabled";
-const DEFAULT_TRANSFORM: Transform = { scale: 100, x: 0, y: 0, brightness: 100, contrast: 100, saturation: 100, hue: 0, fit: "width" };
+const DEFAULT_TRANSFORM: Transform = { scale: 100, x: 0, y: 0, brightness: 100, contrast: 100, saturation: 100, hue: 0, temperature: 0, fit: "width" };
 const MAX_COMPARE = 4;
+const MAX_HISTORY = 15;
 const STAGE_CANVAS_WIDTH = 1920;
 const STAGE_CANVAS_HEIGHT = 1080;
 const STAGE_CANVAS_RATIO = STAGE_CANVAS_WIDTH / STAGE_CANVAS_HEIGHT;
@@ -170,12 +173,14 @@ function normalizeTransform(value: unknown): Transform {
     contrast: numberOr(transform.contrast, DEFAULT_TRANSFORM.contrast),
     saturation: numberOr(transform.saturation, DEFAULT_TRANSFORM.saturation),
     hue: numberOr(transform.hue, DEFAULT_TRANSFORM.hue),
+    temperature: numberOr(transform.temperature, DEFAULT_TRANSFORM.temperature),
     fit: transform.fit === "height" ? "height" : "width",
   };
 }
 
 function pictureFilter(transform: Transform) {
-  return `brightness(${transform.brightness}%) contrast(${transform.contrast}%) saturate(${transform.saturation}%) hue-rotate(${transform.hue}deg)`;
+  const warmth = Math.abs(transform.temperature), temperatureHue = transform.temperature > 0 ? -warmth * .1 : warmth * .1;
+  return `brightness(${transform.brightness}%) contrast(${transform.contrast}%) saturate(${transform.saturation + warmth * .18}%) sepia(${warmth * .16}%) hue-rotate(${transform.hue + temperatureHue}deg)`;
 }
 
 function drawProjectedImage(
@@ -234,6 +239,8 @@ function StageCanvas({
   label,
   onActivate,
   onTransform,
+  onInteractionStart,
+  onInteractionEnd,
 }: {
   image: LibraryImage;
   interactive?: boolean;
@@ -241,6 +248,8 @@ function StageCanvas({
   label?: string;
   onActivate?: () => void;
   onTransform?: (transform: Transform) => void;
+  onInteractionStart?: () => void;
+  onInteractionEnd?: () => void;
 }) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const [fittedSize, setFittedSize] = useState<{ width: number; height: number } | null>(null);
@@ -273,6 +282,7 @@ function StageCanvas({
   function pointerDown(event: PointerEvent<HTMLDivElement>) {
     if (!interactive) return;
     lastPointer.current = { x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, axis: null };
+    onInteractionStart?.();
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
@@ -305,8 +315,8 @@ function StageCanvas({
       onClick={onActivate}
       onPointerDown={pointerDown}
       onPointerMove={pointerMove}
-      onPointerUp={() => (lastPointer.current = null)}
-      onPointerCancel={() => (lastPointer.current = null)}
+      onPointerUp={() => { lastPointer.current = null; onInteractionEnd?.() }}
+      onPointerCancel={() => { lastPointer.current = null; onInteractionEnd?.() }}
     >
       <div
         className="projection-frame"
@@ -422,6 +432,8 @@ export default function Home() {
   const compare3DRefs = useRef(new Map<string, Stage3DHandle>());
   const compareCameraSerialRef = useRef(0);
   const urlsRef = useRef<string[]>([]);
+  const singleHistoryRef = useRef(new Map<string, TransformHistory>());
+  const singleHistoryGroupRef = useRef<{ id: string; captured: boolean } | null>(null);
 
   useEffect(() => {
     Promise.all([readLibrary(), readCategories()])
@@ -499,6 +511,20 @@ export default function Home() {
     { id: "uncategorized", name: "未分類", removable: false, images: filteredImages.filter((image) => !image.categoryId || !categories.some((category) => category.id === image.categoryId)) },
   ], [categories, filteredImages]);
 
+  useEffect(() => {
+    if (viewMode !== "single" || !activeImage) return;
+    const handleHistoryKey = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      if ((event.target as HTMLElement | null)?.closest("textarea,input[type='text'],input:not([type]),[contenteditable='true']")) return;
+      const key = event.key.toLowerCase(), redo = (key === "z" && event.shiftKey) || key === "y";
+      if (key !== "z" && key !== "y") return;
+      event.preventDefault();
+      if (redo) redoTransform(activeImage.id); else undoTransform(activeImage.id);
+    };
+    window.addEventListener("keydown", handleHistoryKey);
+    return () => window.removeEventListener("keydown", handleHistoryKey);
+  }, [viewMode, activeImage?.id, images]);
+
   function showToast(message: string) {
     setToast(message);
     window.setTimeout(() => setToast(""), 2800);
@@ -558,8 +584,41 @@ export default function Home() {
     }));
   }
 
+  function transformHistory(id: string) {
+    let history = singleHistoryRef.current.get(id);
+    if (!history) { history = { past: [], future: [] }; singleHistoryRef.current.set(id, history) }
+    return history;
+  }
+
+  function beginTransformInteraction(id: string) {
+    singleHistoryGroupRef.current = { id, captured: false };
+  }
+
+  function endTransformInteraction() {
+    singleHistoryGroupRef.current = null;
+  }
+
   function updateTransform(id: string, transform: Transform) {
+    const current = images.find(image => image.id === id)?.transform;
+    if (!current || JSON.stringify(current) === JSON.stringify(transform)) return;
+    const group = singleHistoryGroupRef.current, shouldCapture = !group || group.id !== id || !group.captured;
+    if (shouldCapture) {
+      const history = transformHistory(id); history.past.push({ ...current }); history.past = history.past.slice(-MAX_HISTORY); history.future = [];
+      if (group?.id === id) group.captured = true;
+    }
     patchImage(id, { transform });
+  }
+
+  function undoTransform(id: string) {
+    const image = images.find(item => item.id === id), history = transformHistory(id), previous = history.past.pop();
+    if (!image || !previous) return;
+    history.future.push({ ...image.transform }); history.future = history.future.slice(-MAX_HISTORY); singleHistoryGroupRef.current = null; patchImage(id, { transform: previous }); showToast("已復原單張圖片的上一步調整。");
+  }
+
+  function redoTransform(id: string) {
+    const image = images.find(item => item.id === id), history = transformHistory(id), next = history.future.pop();
+    if (!image || !next) return;
+    history.past.push({ ...image.transform }); history.past = history.past.slice(-MAX_HISTORY); singleHistoryGroupRef.current = null; patchImage(id, { transform: next }); showToast("已重做單張圖片的下一步調整。");
   }
 
   async function deleteFromLibrary(image: LibraryImage) {
@@ -766,6 +825,7 @@ export default function Home() {
       contrast: DEFAULT_TRANSFORM.contrast,
       saturation: DEFAULT_TRANSFORM.saturation,
       hue: DEFAULT_TRANSFORM.hue,
+      temperature: DEFAULT_TRANSFORM.temperature,
     });
   }
 
@@ -1084,7 +1144,7 @@ export default function Home() {
             <div className={`single-view ${activeImage && !singleControlsCollapsed ? "controls-open" : ""}`}>
               <div className="canvas-wrap">
                 {activeImage ? (
-                  <StageCanvas image={activeImage} interactive fitContainer onTransform={(transform) => updateTransform(activeImage.id, transform)} />
+                  <StageCanvas image={activeImage} interactive fitContainer onInteractionStart={() => beginTransformInteraction(activeImage.id)} onInteractionEnd={endTransformInteraction} onTransform={(transform) => updateTransform(activeImage.id, transform)} />
                 ) : (
                   <button className="empty-stage" onClick={() => inputRef.current?.click()}>
                     <span>＋</span><strong>把背景圖放進舞台</strong><small>可一次選取多張 JPG、PNG 或 WEBP</small>
@@ -1098,7 +1158,7 @@ export default function Home() {
                   <div className="editor-panel-title"><div><strong>圖片調整</strong><span>位置、尺寸與畫面效果</span></div><button onClick={() => setSingleControlsCollapsed(true)}>收合 ›</button></div>
                   <section className="single-control-section">
                     <strong className="single-section-title">縮放</strong>
-                    <div className="range-control scale-control"><label>縮放 <b>{activeImage.transform.scale}%</b></label><input aria-label="圖片縮放，雙擊重設為 100%" title="雙擊回到 100%" type="range" min="40" max="220" value={activeImage.transform.scale} onDoubleClick={() => updateTransform(activeImage.id, { ...activeImage.transform, scale: 100 })} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, scale: Number(e.target.value) })} /></div>
+                    <div className="range-control scale-control"><label>縮放 <b>{activeImage.transform.scale}%</b></label><input aria-label="圖片縮放，雙擊重設為 100%" title="雙擊回到 100%" type="range" min="40" max="220" value={activeImage.transform.scale} onPointerDown={() => beginTransformInteraction(activeImage.id)} onPointerUp={endTransformInteraction} onPointerCancel={endTransformInteraction} onDoubleClick={() => updateTransform(activeImage.id, { ...activeImage.transform, scale: 100 })} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, scale: Number(e.target.value) })} /></div>
                   </section>
                   <section className="single-control-section">
                     <strong className="single-section-title">快速對齊</strong>
@@ -1110,13 +1170,14 @@ export default function Home() {
                   </section>
                   <div className={`image-adjustments ${adjustmentsCollapsed ? "collapsed" : ""}`}>
                     <button className="image-adjustments-toggle" aria-expanded={!adjustmentsCollapsed} onClick={() => setAdjustmentsCollapsed((current) => !current)}>
-                      <span><strong>畫面調整</strong><small>亮度、對比、飽和度與色調</small></span><b>{adjustmentsCollapsed ? "展開 ▾" : "收合 ▴"}</b>
+                      <span><strong>畫面調整</strong><small>亮度、對比、飽和度、色調與色溫</small></span><b>{adjustmentsCollapsed ? "展開 ▾" : "收合 ▴"}</b>
                     </button>
                     {!adjustmentsCollapsed && <div className="image-adjustments-body">
-                      <div className="range-control"><label>亮度 <b>{activeImage.transform.brightness}%</b></label><input type="range" min="30" max="160" value={activeImage.transform.brightness} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, brightness: Number(e.target.value) })} /></div>
-                      <div className="range-control"><label>對比 <b>{activeImage.transform.contrast}%</b></label><input type="range" min="30" max="200" value={activeImage.transform.contrast} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, contrast: Number(e.target.value) })} /></div>
-                      <div className="range-control"><label>飽和度 <b>{activeImage.transform.saturation}%</b></label><input type="range" min="0" max="200" value={activeImage.transform.saturation} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, saturation: Number(e.target.value) })} /></div>
-                      <div className="range-control"><label>色調 <b>{activeImage.transform.hue}°</b></label><input type="range" min="-180" max="180" value={activeImage.transform.hue} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, hue: Number(e.target.value) })} /></div>
+                      <div className="range-control"><label>亮度 <b>{activeImage.transform.brightness}%</b></label><input title="雙擊重設亮度" type="range" min="30" max="160" value={activeImage.transform.brightness} onPointerDown={() => beginTransformInteraction(activeImage.id)} onPointerUp={endTransformInteraction} onPointerCancel={endTransformInteraction} onDoubleClick={() => updateTransform(activeImage.id, { ...activeImage.transform, brightness: 100 })} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, brightness: Number(e.target.value) })} /></div>
+                      <div className="range-control"><label>對比 <b>{activeImage.transform.contrast}%</b></label><input title="雙擊重設對比" type="range" min="30" max="200" value={activeImage.transform.contrast} onPointerDown={() => beginTransformInteraction(activeImage.id)} onPointerUp={endTransformInteraction} onPointerCancel={endTransformInteraction} onDoubleClick={() => updateTransform(activeImage.id, { ...activeImage.transform, contrast: 100 })} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, contrast: Number(e.target.value) })} /></div>
+                      <div className="range-control"><label>飽和度 <b>{activeImage.transform.saturation}%</b></label><input title="雙擊重設飽和度" type="range" min="0" max="200" value={activeImage.transform.saturation} onPointerDown={() => beginTransformInteraction(activeImage.id)} onPointerUp={endTransformInteraction} onPointerCancel={endTransformInteraction} onDoubleClick={() => updateTransform(activeImage.id, { ...activeImage.transform, saturation: 100 })} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, saturation: Number(e.target.value) })} /></div>
+                      <div className="range-control"><label>色調 <b>{activeImage.transform.hue}°</b></label><input title="雙擊重設色調" type="range" min="-180" max="180" value={activeImage.transform.hue} onPointerDown={() => beginTransformInteraction(activeImage.id)} onPointerUp={endTransformInteraction} onPointerCancel={endTransformInteraction} onDoubleClick={() => updateTransform(activeImage.id, { ...activeImage.transform, hue: 0 })} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, hue: Number(e.target.value) })} /></div>
+                      <div className="range-control"><label>色溫 <b>{activeImage.transform.temperature > 0 ? "+" : ""}{activeImage.transform.temperature}</b></label><input title="雙擊重設色溫" type="range" min="-100" max="100" value={activeImage.transform.temperature} onPointerDown={() => beginTransformInteraction(activeImage.id)} onPointerUp={endTransformInteraction} onPointerCancel={endTransformInteraction} onDoubleClick={() => updateTransform(activeImage.id, { ...activeImage.transform, temperature: 0 })} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, temperature: Number(e.target.value) })} /></div>
                       <button className="secondary adjustment-reset" onClick={resetAdjustments}>重設修圖</button>
                     </div>}
                   </div>
@@ -1133,7 +1194,7 @@ export default function Home() {
                       placeholder="雙擊新增備註，例如：第二幕／暖色版本／導演首選"
                       onSave={(note) => patchImage(activeImage.id, { note })}
                     />
-                    <span>拖曳圖片可調整位置；按住 Shift 可鎖定水平或垂直方向。</span>
+                    <span>Shift 拖曳鎖定方向；Ctrl/Cmd＋Z 復原，Ctrl/Cmd＋Shift＋Z 重做。</span>
                   </div>
                   <button className="secondary single-reset-all" onClick={resetActive}>重設全部圖片調整</button>
                 </div>
