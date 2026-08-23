@@ -4,7 +4,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 type ProjectionImage = { url: string; name: string; note: string; transform: { scale: number; x: number; y: number; brightness: number; fit: "cover" | "contain" } };
 type PresetName = "模板視角" | "前排" | "左側" | "右側" | "俯視";
-type CameraPose = { fov: number; position: [number, number, number]; target: [number, number, number] };
+export type CameraPose = { fov: number; position: [number, number, number]; target: [number, number, number] };
 type Person = { id: string; x: number; z: number; rotation: number; heightCm: number; visible: boolean };
 type Backdrop = { x: number; z: number; rotation: number; count: number; widthCm: number; heightCm: number; gapCm: number; visible: boolean };
 type Layout = { version: 2; people: Person[]; backdrop: Backdrop };
@@ -21,7 +21,15 @@ const DEFAULT_PEOPLE: Person[] = [
 ].map(([id, x, z, rotation]) => ({ id: String(id), x: Number(x), z: Number(z), rotation: Number(rotation), heightCm: 172, visible: true }));
 const DEFAULT_BACKDROP: Backdrop = { x: 0, z: 7.36, rotation: 0, count: 1, widthCm: 122, heightCm: 252, gapCm: 20, visible: true };
 const TEMPLATE_CAMERA: CameraPose = { fov: 20, position: [0, 1.25, -22], target: [0, 3.5, 7] };
-export type Stage3DHandle = { exportView: () => void };
+export type Stage3DHandle = { exportView: () => void; captureView: () => string | null; getCameraPose: () => CameraPose | null };
+type Stage3DProps = {
+  image: ProjectionImage | null;
+  compact?: boolean;
+  showObjectControls?: boolean;
+  syncId?: string;
+  syncCamera?: { sourceId: string; serial: number; pose: CameraPose } | null;
+  onCameraChange?: (sourceId: string, pose: CameraPose) => void;
+};
 
 const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
 const round = (n: number, digits = 2) => Math.round(n * 10 ** digits) / 10 ** digits;
@@ -94,6 +102,9 @@ function writeCamera(camera: THREE.PerspectiveCamera, controls: OrbitControls) {
 function applyPose(camera: THREE.PerspectiveCamera, controls: OrbitControls, pose: CameraPose) {
   camera.fov = pose.fov; camera.position.set(...pose.position); controls.target.set(...pose.target); camera.updateProjectionMatrix(); controls.update();
 }
+function currentPose(camera: THREE.PerspectiveCamera, controls: OrbitControls): CameraPose {
+  return { fov: camera.fov, position: camera.position.toArray() as [number, number, number], target: controls.target.toArray() as [number, number, number] };
+}
 const lit = (color: number, roughness = .78, metalness = .02) => new THREE.MeshStandardMaterial({ color, roughness, metalness });
 const unlit = (color: number) => new THREE.MeshBasicMaterial({ color, toneMapped: false });
 function box(parent: THREE.Object3D, size: [number, number, number], position: [number, number, number], material: THREE.Material, cast = false, receive = true) {
@@ -129,13 +140,15 @@ function projectionTexture(image: ProjectionImage) {
   });
 }
 
-const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(function Stage3D({ image }, ref) {
+const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image, compact = false, showObjectControls = true, syncId = "main", syncCamera = null, onCameraChange }, ref) {
   const mountRef = useRef<HTMLDivElement>(null), rendererRef = useRef<THREE.WebGLRenderer | null>(null), cameraRef = useRef<THREE.PerspectiveCamera | null>(null), controlsRef = useRef<OrbitControls | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null), screenMatRef = useRef<THREE.MeshBasicMaterial | null>(null), textureRef = useRef<THREE.Texture | null>(null), personMatRef = useRef<THREE.Material | null>(null);
   const backdropMatsRef = useRef<{ panel: THREE.Material; frame: THREE.Material } | null>(null), peopleRef = useRef(new Map<string, THREE.Group>()), backdropRef = useRef<THREE.Group | null>(null), backdropSpecRef = useRef("");
-  const boxRef = useRef<{ box: THREE.Box3; helper: THREE.Box3Helper } | null>(null), dragRef = useRef<{ selection: Selection; dx: number; dz: number } | null>(null), timerRef = useRef<number | null>(null);
+  const boxRef = useRef<{ box: THREE.Box3; helper: THREE.Box3Helper } | null>(null), dragRef = useRef<{ selection: Selection; dx: number; dz: number } | null>(null), timerRef = useRef<number | null>(null), applyingSyncRef = useRef(false), onCameraChangeRef = useRef(onCameraChange);
   const [preset, setPreset] = useState<PresetName>("模板視角"), [layout, setLayout] = useState<Layout>(readLayout), [selection, setSelection] = useState<Selection>({ kind: "backdrop" }), [error, setError] = useState(""), [notice, setNotice] = useState("");
+  const [controlsCollapsed, setControlsCollapsed] = useState(() => localStorage.getItem("stage3d-controls-collapsed") === "1");
   const layoutRef = useRef(layout), selectionRef = useRef(selection); layoutRef.current = layout; selectionRef.current = selection;
+  onCameraChangeRef.current = onCameraChange;
   const showNotice = (message: string) => { setNotice(message); if (timerRef.current) clearTimeout(timerRef.current); timerRef.current = window.setTimeout(() => setNotice(""), 2600) };
   const updatePerson = (id: string, patch: Partial<Person>) => setLayout(current => ({ ...current, people: current.people.map(p => p.id === id ? clampPerson(cleanPerson({ ...p, ...patch }, p)) : p) }));
   const updateBackdrop = (patch: Partial<Backdrop>, reject = true) => setLayout(current => {
@@ -145,6 +158,7 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
   });
 
   useEffect(() => { try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)) } catch { /* optional */ } }, [layout]);
+  useEffect(() => { if (showObjectControls) try { localStorage.setItem("stage3d-controls-collapsed", controlsCollapsed ? "1" : "0") } catch { /* optional */ } }, [controlsCollapsed, showObjectControls]);
   useEffect(() => {
     const mount = mountRef.current; if (!mount) return; let frame = 0, renderer: THREE.WebGLRenderer;
     try { renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, powerPreference: "high-performance" }) } catch { setError("這個瀏覽器目前無法啟動 3D 畫面，請確認硬體加速已開啟。"); return }
@@ -152,7 +166,9 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
     const scene = new THREE.Scene(); scene.background = new THREE.Color(0x070809); sceneRef.current = scene;
     const pose = readCamera() ?? TEMPLATE_CAMERA, camera = new THREE.PerspectiveCamera(pose.fov, 16 / 9, .1, 180); camera.position.set(...pose.position); cameraRef.current = camera;
     const controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true; controls.dampingFactor = .07; controls.target.set(...pose.target); controls.minDistance = 2.5; controls.maxDistance = 140; controls.maxPolarAngle = Math.PI * .92; controlsRef.current = controls;
-    const remember = () => { if (!dragRef.current) { writeCamera(camera, controls); setPreset("模板視角") } }; controls.addEventListener("end", remember);
+    const emitCamera = () => { if (!applyingSyncRef.current) onCameraChangeRef.current?.(syncId, currentPose(camera, controls)) };
+    const remember = () => { if (!dragRef.current) { if (!compact) writeCamera(camera, controls); setPreset("模板視角") } };
+    controls.addEventListener("change", emitCamera); controls.addEventListener("end", remember);
     scene.add(new THREE.HemisphereLight(0x9cb5ca, 0x19120f, 1.1)); const key = new THREE.SpotLight(0xffe4c5, 760, 52, Math.PI / 4.5, .42, 1.4); key.position.set(-5, 15, -5); key.target.position.set(0, 0, 7); key.castShadow = true; key.shadow.mapSize.set(1024, 1024); scene.add(key, key.target); const fill = new THREE.DirectionalLight(0x8aa9d7, 1.6); fill.position.set(7, 9, -8); scene.add(fill);
     const black = lit(0x090909, .92), curtain = lit(0x050505, 1), floor = lit(0x3b3936, .88), apron = lit(0x3c241b, .9), frameMat = lit(0xaaa5ba, .35, .2), line = lit(0xc8c3ba, .82); personMatRef.current = lit(0x747678, .72, .05); backdropMatsRef.current = { panel: unlit(0x765548), frame: unlit(0x2b2927) };
     box(scene, [27, .24, STAGE.depth], [0, -.12, STAGE.depth / 2], floor);
@@ -168,13 +184,13 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
     const setRay = (e: PointerEvent) => { const r = renderer.domElement.getBoundingClientRect(); pointer.set((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1); ray.setFromCamera(pointer, camera) };
     const pick = (e: PointerEvent) => { setRay(e); const targets: THREE.Object3D[] = [...peopleRef.current.values()]; if (backdropRef.current) targets.push(backdropRef.current); let o: THREE.Object3D | null = ray.intersectObjects(targets, true)[0]?.object ?? null; while (o) { if (o.userData.selection) return o.userData.selection as Selection; o = o.parent } return null };
     const floorPoint = (e: PointerEvent) => { setRay(e); return ray.ray.intersectPlane(plane, new THREE.Vector3()) };
-    const down = (e: PointerEvent) => { if (e.button !== 0) return; const selected = pick(e), point = floorPoint(e); if (!selected || !point) return; const pos = selected.kind === "backdrop" ? layoutRef.current.backdrop : layoutRef.current.people.find(p => p.id === selected.id); if (!pos) return; dragRef.current = { selection: selected, dx: pos.x - point.x, dz: pos.z - point.z }; controls.enabled = false; setSelection(selected); renderer.domElement.setPointerCapture(e.pointerId); e.preventDefault() };
+    const down = (e: PointerEvent) => { if (!showObjectControls || e.button !== 0) return; const selected = pick(e), point = floorPoint(e); if (!selected || !point) return; const pos = selected.kind === "backdrop" ? layoutRef.current.backdrop : layoutRef.current.people.find(p => p.id === selected.id); if (!pos) return; dragRef.current = { selection: selected, dx: pos.x - point.x, dz: pos.z - point.z }; controls.enabled = false; setSelection(selected); renderer.domElement.setPointerCapture(e.pointerId); e.preventDefault() };
     const move = (e: PointerEvent) => { const drag = dragRef.current, point = floorPoint(e); if (!drag || !point) return; if (drag.selection.kind === "backdrop") updateBackdrop({ x: point.x + drag.dx, z: point.z + drag.dz }, false); else updatePerson(drag.selection.id, { x: point.x + drag.dx, z: point.z + drag.dz }); e.preventDefault() };
     const up = (e: PointerEvent) => { if (!dragRef.current) return; dragRef.current = null; controls.enabled = true; if (renderer.domElement.hasPointerCapture(e.pointerId)) renderer.domElement.releasePointerCapture(e.pointerId); e.preventDefault() };
     renderer.domElement.addEventListener("pointerdown", down, true); renderer.domElement.addEventListener("pointermove", move, true); renderer.domElement.addEventListener("pointerup", up, true); renderer.domElement.addEventListener("pointercancel", up, true);
     const ro = new ResizeObserver(() => { const s = fit169(Math.max(1, mount.clientWidth), Math.max(1, mount.clientHeight)); renderer.setSize(s.width, s.height, false); camera.aspect = 16 / 9; camera.updateProjectionMatrix() }); ro.observe(mount);
-    const animate = () => { controls.update(); const s = selectionRef.current, obj = s.kind === "backdrop" ? backdropRef.current : peopleRef.current.get(s.id); if (boxRef.current) { boxRef.current.helper.visible = Boolean(obj?.visible); if (obj?.visible) boxRef.current.box.setFromObject(obj) } renderer.render(scene, camera); frame = requestAnimationFrame(animate) }; animate();
-    return () => { cancelAnimationFrame(frame); ro.disconnect(); controls.removeEventListener("end", remember); controls.dispose(); textureRef.current?.dispose(); scene.traverse(o => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose()) } }); renderer.dispose(); renderer.domElement.remove(); rendererRef.current = cameraRef.current = controlsRef.current = sceneRef.current = screenMatRef.current = personMatRef.current = backdropMatsRef.current = boxRef.current = null; peopleRef.current.clear(); backdropRef.current = null };
+    const animate = () => { controls.update(); const s = selectionRef.current, obj = s.kind === "backdrop" ? backdropRef.current : peopleRef.current.get(s.id); if (boxRef.current) { boxRef.current.helper.visible = showObjectControls && Boolean(obj?.visible); if (showObjectControls && obj?.visible) boxRef.current.box.setFromObject(obj) } renderer.render(scene, camera); frame = requestAnimationFrame(animate) }; animate();
+    return () => { cancelAnimationFrame(frame); ro.disconnect(); controls.removeEventListener("change", emitCamera); controls.removeEventListener("end", remember); controls.dispose(); textureRef.current?.dispose(); scene.traverse(o => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose()) } }); renderer.dispose(); renderer.domElement.remove(); rendererRef.current = cameraRef.current = controlsRef.current = sceneRef.current = screenMatRef.current = personMatRef.current = backdropMatsRef.current = boxRef.current = null; peopleRef.current.clear(); backdropRef.current = null };
   }, []);
 
   useEffect(() => {
@@ -190,8 +206,18 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
   }, [layout.backdrop]);
   useEffect(() => { if (selection.kind === "person" && !layout.people.some(p => p.id === selection.id)) setSelection({ kind: "backdrop" }) }, [layout.people, selection]);
   useEffect(() => {
+    if (!showObjectControls) return;
     const key = (e: KeyboardEvent) => { if (!e.key.startsWith("Arrow") || (e.target as HTMLElement | null)?.closest("input,textarea,select,button,[contenteditable='true']")) return; const step = e.shiftKey ? .01 : .1, delta = ({ ArrowUp: [0, step], ArrowDown: [0, -step], ArrowLeft: [-step, 0], ArrowRight: [step, 0] } as Record<string, [number, number]>)[e.key]; if (!delta) return; e.preventDefault(); const s = selectionRef.current, current = layoutRef.current; if (s.kind === "backdrop") updateBackdrop({ x: current.backdrop.x + delta[0], z: current.backdrop.z + delta[1] }, false); else { const p = current.people.find(x => x.id === s.id); if (p) updatePerson(p.id, { x: p.x + delta[0], z: p.z + delta[1] }) } }; window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
-  }, []);
+  }, [showObjectControls]);
+  useEffect(() => {
+    if (!syncCamera || syncCamera.sourceId === syncId) return;
+    const camera = cameraRef.current, controls = controlsRef.current;
+    if (!camera || !controls) return;
+    applyingSyncRef.current = true;
+    applyPose(camera, controls, syncCamera.pose);
+    const release = requestAnimationFrame(() => { applyingSyncRef.current = false });
+    return () => cancelAnimationFrame(release);
+  }, [syncCamera?.serial, syncCamera?.sourceId, syncId]);
   useEffect(() => {
     const mat = screenMatRef.current; if (!mat) return; let cancelled = false;
     if (!image) { textureRef.current?.dispose(); textureRef.current = null; mat.map = null; mat.color.set(0x25282d); mat.needsUpdate = true; return }
@@ -200,8 +226,10 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
 
   const moveCamera = (name: PresetName) => { const camera = cameraRef.current, controls = controlsRef.current; if (!camera || !controls) return; const poses: Record<Exclude<PresetName, "模板視角">, CameraPose> = { 前排: { fov: 48, position: [0, .78, -5.2], target: [0, 3.8, 8] }, 左側: { fov: 38, position: [-11.5, 2.8, -13.5], target: [0, 3.8, 7.2] }, 右側: { fov: 38, position: [11.5, 2.8, -13.5], target: [0, 3.8, 7.2] }, 俯視: { fov: 42, position: [0, 27, -2], target: [0, 0, 7.2] } }; applyPose(camera, controls, name === "模板視角" ? readCamera() ?? TEMPLATE_CAMERA : poses[name]); setPreset(name) };
   const resetCamera = () => { const camera = cameraRef.current, controls = controlsRef.current; if (!camera || !controls) return; try { localStorage.removeItem(CAMERA_KEY) } catch { /* optional */ } applyPose(camera, controls, TEMPLATE_CAMERA); setPreset("模板視角") };
-  const exportView = () => { const renderer = rendererRef.current; if (!renderer) return; const a = document.createElement("a"); a.download = `${image?.name || "舞台"}-3D視角.png`; a.href = renderer.domElement.toDataURL("image/png"); a.click() };
-  useImperativeHandle(ref, () => ({ exportView }), [image]);
+  const captureView = () => rendererRef.current?.domElement.toDataURL("image/png") ?? null;
+  const getCameraPose = () => cameraRef.current && controlsRef.current ? currentPose(cameraRef.current, controlsRef.current) : null;
+  const exportView = () => { const data = captureView(); if (!data) return; const a = document.createElement("a"); a.download = `${image?.name || "舞台"}-3D視角.png`; a.href = data; a.click() };
+  useImperativeHandle(ref, () => ({ exportView, captureView, getCameraPose }), [image]);
 
   const addPerson = (source?: Person) => { if (layout.people.length >= MAX_PEOPLE) return showNotice(`人物最多 ${MAX_PEOPLE} 位。`); const id = `person-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, base = source ?? { ...DEFAULT_PEOPLE[0], x: 0, z: 3.2, rotation: 0 }, next = clampPerson({ ...base, id, x: base.x + (source ? .5 : 0) }); setLayout(c => ({ ...c, people: [...c.people, next] })); setSelection({ kind: "person", id }) };
   const deletePerson = () => { if (selection.kind === "person") { setLayout(c => ({ ...c, people: c.people.filter(p => p.id !== selection.id) })); setSelection({ kind: "backdrop" }) } };
@@ -210,13 +238,14 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
   const snapLine = () => { const z = selection.kind === "backdrop" ? layout.backdrop.z : layout.people.find(p => p.id === selection.id)?.z; if (z == null) return; const i = clamp(Math.round(z / LINE_GAP), 0, LINE_COUNT - 1); if (selection.kind === "backdrop") updateBackdrop({ z: i * LINE_GAP }, false); else updatePerson(selection.id, { z: i * LINE_GAP }); showNotice(`已對齊第 ${i + 1} 線。`) };
   const person = selection.kind === "person" ? layout.people.find(p => p.id === selection.id) ?? null : null, personIndex = person ? layout.people.findIndex(p => p.id === person.id) : -1, selected = person ?? layout.backdrop;
 
-  return <div className="stage3d-shell">
+  return <div className={`stage3d-shell ${compact ? "compact" : ""} ${showObjectControls && !controlsCollapsed ? "controls-open" : ""}`}>
     <div ref={mountRef} className="stage3d-canvas" aria-label="臺中市港區藝術中心 3D 舞台預覽" />
     {error && <div className="stage3d-error">{error}</div>}{notice && <div className="stage3d-notice" role="status">{notice}</div>}
-    <div className="stage3d-badges"><span>鏡框 15.42 × 8.50 m</span><span>天幕深度 10.65 m</span><span>投影 13.20 × 7.43 m・16:9</span><span>地墊線 12 條・間距 0.92 m</span><span className="prototype">互動物件版 V5</span></div>
+    {!compact && <div className="stage3d-badges"><span>鏡框 15.42 × 8.50 m</span><span>天幕深度 10.65 m</span><span>投影 13.20 × 7.43 m・16:9</span><span>地墊線 12 條・間距 0.92 m</span><span className="prototype">互動物件版 V5</span></div>}
     <div className="stage3d-presets">{(["模板視角", "前排", "左側", "右側", "俯視"] as PresetName[]).map(name => <button key={name} className={preset === name ? "active" : ""} onClick={() => moveCamera(name)}>{name}</button>)}<button className="reset-view" onClick={resetCamera}>重設模板</button></div>
-    <div className="stage3d-objects" aria-label="3D 物件調整">
-      <div className="stage3d-objects-title"><div><strong>物件調整</strong><span>點選場景物件後可直接拖曳</span></div><button onClick={() => addPerson()}>＋ 人物</button></div>
+    {showObjectControls && controlsCollapsed && <button className="stage3d-panel-open" onClick={() => setControlsCollapsed(false)}>‹ 展開物件控制</button>}
+    {showObjectControls && !controlsCollapsed && <div className="stage3d-objects" aria-label="3D 物件調整">
+      <div className="stage3d-objects-title"><div><strong>物件調整</strong><span>點選場景物件後可直接拖曳</span></div><div className="stage3d-title-actions"><button onClick={() => addPerson()}>＋ 人物</button><button onClick={() => setControlsCollapsed(true)}>收合 ›</button></div></div>
       <div className="stage3d-object-picker"><label><span>選取人物</span><select value={selection.kind === "person" ? selection.id : ""} onChange={e => e.target.value && setSelection({ kind: "person", id: e.target.value })}><option value="">選擇人物…</option>{layout.people.map((p, i) => <option key={p.id} value={p.id}>人物 {i + 1}{p.visible ? "" : "（隱藏）"}</option>)}</select></label><button className={selection.kind === "backdrop" ? "active" : ""} onClick={() => setSelection({ kind: "backdrop" })}>背板列</button></div>
       <div className="stage3d-inspector-heading"><strong>{person ? `人物 ${personIndex + 1}` : "背板列"}</strong><label><input type="checkbox" checked={selected.visible} onChange={e => person ? updatePerson(person.id, { visible: e.target.checked }) : updateBackdrop({ visible: e.target.checked })} />顯示</label></div>
       {person ? <label className="stage3d-range-field"><span>人物身高</span><input type="range" min="158" max="185" value={person.heightCm} onChange={e => updatePerson(person.id, { heightCm: +e.target.value })} /><b>{person.heightCm} cm</b></label> :
@@ -234,8 +263,8 @@ const Stage3D = forwardRef<Stage3DHandle, { image: ProjectionImage | null }>(fun
       <div className="stage3d-quick-actions"><button onClick={() => person ? updatePerson(person.id, { rotation: 0 }) : updateBackdrop({ rotation: 0 })}>面向觀眾</button><button onClick={snapLine}>對齊最近地墊線</button><button onClick={resetSelected}>重設選取</button></div>
       {person && <div className="stage3d-person-actions"><button onClick={() => addPerson(person)} disabled={layout.people.length >= MAX_PEOPLE}>複製人物</button><button className="danger" onClick={deletePerson}>刪除人物</button></div>}
       <button className="stage3d-reset-all" onClick={resetAll}>重設全部配置</button>
-    </div>
-    <div className="stage3d-help"><strong>{image ? image.name : "請先從左側選擇背景圖片"}</strong><span>點選物件後拖曳 · 方向鍵 10 cm · Shift＋方向鍵 1 cm · 空白處拖曳鏡頭</span></div>
+    </div>}
+    {!compact && <div className="stage3d-help"><strong>{image ? image.name : "請先從左側選擇背景圖片"}</strong><span>{showObjectControls ? "點選物件後拖曳 · 方向鍵 10 cm · Shift＋方向鍵 1 cm · 空白處拖曳鏡頭" : "左鍵旋轉 · 右鍵平移 · 滾輪縮放"}</span></div>}
   </div>;
 });
 export default Stage3D;

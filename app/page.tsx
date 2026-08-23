@@ -2,9 +2,11 @@
 
 import { PointerEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { registerSW } from "virtual:pwa-register";
-import Stage3D, { type Stage3DHandle } from "./Stage3D";
+import Stage3D, { type CameraPose, type Stage3DHandle } from "./Stage3D";
 
 type ViewMode = "single" | "compare" | "threeD";
+type ComparePreviewMode = "flat" | "threeD";
+type CompareCameraMode = "sync" | "individual";
 type FitMode = "cover" | "contain";
 type Transform = { scale: number; x: number; y: number; brightness: number; fit: FitMode };
 type StoredImage = {
@@ -345,6 +347,9 @@ export default function Home() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>("single");
+  const [comparePreviewMode, setComparePreviewMode] = useState<ComparePreviewMode>("flat");
+  const [compareCameraMode, setCompareCameraMode] = useState<CompareCameraMode>("sync");
+  const [compareCameraSync, setCompareCameraSync] = useState<{ sourceId: string; serial: number; pose: CameraPose } | null>(null);
   const [search, setSearch] = useState("");
   const [ready, setReady] = useState(false);
   const [draggingFiles, setDraggingFiles] = useState(false);
@@ -357,6 +362,8 @@ export default function Home() {
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const stage3DRef = useRef<Stage3DHandle>(null);
+  const compare3DRefs = useRef(new Map<string, Stage3DHandle>());
+  const compareCameraSerialRef = useRef(0);
   const urlsRef = useRef<string[]>([]);
 
   useEffect(() => {
@@ -679,14 +686,43 @@ export default function Home() {
     showToast("模擬圖已匯出。" );
   }
 
+  function syncCompareCamera(sourceId: string, pose: CameraPose) {
+    if (compareCameraMode !== "sync") return;
+    compareCameraSerialRef.current += 1;
+    setCompareCameraSync({ sourceId, serial: compareCameraSerialRef.current, pose });
+  }
+
+  function enableSynchronizedComparison() {
+    setCompareCameraMode("sync");
+    const first = comparedImages.map((item) => compare3DRefs.current.get(item.id)).find(Boolean);
+    const pose = first?.getCameraPose();
+    if (pose) {
+      compareCameraSerialRef.current += 1;
+      setCompareCameraSync({ sourceId: "compare-toolbar", serial: compareCameraSerialRef.current, pose });
+    }
+  }
+
   async function exportComparison() {
     if (!comparedImages.length) return showToast("請先選擇要比較的圖片。");
-    const overlay = await loadHtmlImage(STAGE_OVERLAY_URL);
-    const backgrounds = await Promise.all(comparedImages.map((image) => loadHtmlImage(image.url)));
+    const isThreeD = comparePreviewMode === "threeD";
+    let overlay: HTMLImageElement | null = null;
+    let backgrounds: HTMLImageElement[];
+    try {
+      overlay = isThreeD ? null : await loadHtmlImage(STAGE_OVERLAY_URL);
+      backgrounds = isThreeD
+        ? await Promise.all(comparedImages.map(async (image) => {
+          const data = compare3DRefs.current.get(image.id)?.captureView();
+          if (!data) throw new Error("3D comparison is not ready");
+          return loadHtmlImage(data);
+        }))
+        : await Promise.all(comparedImages.map((image) => loadHtmlImage(image.url)));
+    } catch {
+      return showToast("3D 畫面還在準備中，請稍候再匯出。");
+    }
     const columns = comparedImages.length === 1 ? 1 : 2;
     const rows = Math.ceil(comparedImages.length / columns);
     const tileWidth = 1200;
-    const stageHeight = Math.round(tileWidth / STAGE_CANVAS_RATIO);
+    const stageHeight = isThreeD ? Math.round(tileWidth * 9 / 16) : Math.round(tileWidth / STAGE_CANVAS_RATIO);
     const metaHeight = 86;
     const gap = 24;
     const padding = 32;
@@ -703,7 +739,8 @@ export default function Home() {
       const row = Math.floor(index / columns);
       const x = padding + column * (tileWidth + gap);
       const y = padding + row * (stageHeight + metaHeight + gap);
-      drawStageToContext(context, image, backgrounds[index], overlay, x, y, tileWidth, stageHeight);
+      if (isThreeD) context.drawImage(backgrounds[index], x, y, tileWidth, stageHeight);
+      else if (overlay) drawStageToContext(context, image, backgrounds[index], overlay, x, y, tileWidth, stageHeight);
       context.fillStyle = "#fffefa";
       context.fillRect(x, y + stageHeight, tileWidth, metaHeight);
       context.fillStyle = "#d75d36";
@@ -725,10 +762,10 @@ export default function Home() {
     });
 
     const link = document.createElement("a");
-    link.download = `劇場背景並排比較-${new Date().toISOString().slice(0, 10)}.png`;
+    link.download = `劇場背景${isThreeD ? "3D" : ""}並排比較-${new Date().toISOString().slice(0, 10)}.png`;
     link.href = canvas.toDataURL("image/png");
     link.click();
-    showToast("並排比較圖已匯出。");
+    showToast(`${isThreeD ? "3D " : ""}並排比較圖已匯出。`);
   }
 
   async function installApp() {
@@ -892,13 +929,13 @@ export default function Home() {
 
         <section className="stage-panel">
           <div className="stage-toolbar">
-            <div><p className="eyebrow">PREVIEW</p><h2>{viewMode === "single" ? "舞台預覽" : viewMode === "compare" ? `比較背景（${comparedImages.length}/${MAX_COMPARE}）` : "3D 舞台預覽"}</h2></div>
+            <div><p className="eyebrow">PREVIEW</p><h2>{viewMode === "single" ? "舞台預覽" : viewMode === "compare" ? `${comparePreviewMode === "threeD" ? "3D " : ""}比較背景（${comparedImages.length}/${MAX_COMPARE}）` : "3D 舞台預覽"}</h2></div>
             <div className="stage-toolbar-controls">
               <div className="mode-actions">
                 {viewMode === "single" && <button className="export-action" disabled={!activeImage} onClick={() => activeImage && void exportComposite(activeImage)}>↓ 匯出 PNG</button>}
                 {viewMode === "compare" && <>
                   <button className="clear-action" disabled={!compareIds.length} onClick={() => { setCompareIds([]); showToast("已清空比較選擇。"); }}>清空重選</button>
-                  <button className="export-action" disabled={!comparedImages.length} onClick={() => void exportComparison()}>↓ 匯出比較圖</button>
+                  <button className="export-action" disabled={!comparedImages.length} onClick={() => void exportComparison()}>↓ 匯出{comparePreviewMode === "threeD" ? " 3D" : ""}比較圖</button>
                 </>}
                 {viewMode === "threeD" && <button className="export-action" onClick={() => stage3DRef.current?.exportView()}>↓ 匯出視角</button>}
               </div>
@@ -950,16 +987,28 @@ export default function Home() {
             </div>
           ) : viewMode === "compare" ? (
             <div
-              className="compare-wrap"
+              className={`compare-wrap ${comparePreviewMode === "threeD" ? "three-d" : ""}`}
               onDragOver={(event) => { if (draggingImageId || event.dataTransfer.types.includes("application/x-stage-image")) event.preventDefault(); }}
               onDrop={handleCompareAreaDrop}
             >
+              <div className="compare-modebar">
+                <div className="compare-view-switch" aria-label="比較顯示模式">
+                  <button className={comparePreviewMode === "flat" ? "active" : ""} onClick={() => setComparePreviewMode("flat")}>平面模擬</button>
+                  <button className={comparePreviewMode === "threeD" ? "active" : ""} onClick={() => setComparePreviewMode("threeD")}>3D 舞台</button>
+                </div>
+                {comparePreviewMode === "threeD" && <div className="compare-camera-switch" aria-label="3D 視角控制方式">
+                  <span>視角控制</span>
+                  <button className={compareCameraMode === "sync" ? "active" : ""} onClick={enableSynchronizedComparison}>同步視角</button>
+                  <button className={compareCameraMode === "individual" ? "active" : ""} onClick={() => setCompareCameraMode("individual")}>個別視角</button>
+                  <small>{compareCameraMode === "sync" ? "操作任一畫面，其他畫面會一起移動" : "每個畫面可分別旋轉、平移與縮放"}</small>
+                </div>}
+              </div>
               {comparedImages.length ? (
                 <div className={`compare-grid count-${comparedImages.length}`}>
                   {comparedImages.map((image, index) => (
                     <article
                       key={image.id}
-                      draggable
+                      draggable={comparePreviewMode === "flat"}
                       className={`compare-card ${activeImage?.id === image.id ? "active" : ""} ${dragOverCompareId === image.id ? "drop-target" : ""} ${draggingImageId === image.id ? "is-dragging" : ""}`}
                       onDragStart={(event) => startImageDrag(event, image.id)}
                       onDragEnd={finishImageDrag}
@@ -973,7 +1022,20 @@ export default function Home() {
                       onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragOverCompareId(null); }}
                       onDrop={(event) => handleCompareDrop(event, image.id)}
                     >
-                      <StageCanvas image={image} label={String.fromCharCode(65 + index)} onActivate={() => setActiveId(image.id)} />
+                      {comparePreviewMode === "flat"
+                        ? <StageCanvas image={image} label={String.fromCharCode(65 + index)} onActivate={() => setActiveId(image.id)} />
+                        : <div className="compare-3d-frame">
+                          <span className="compare-label">{String.fromCharCode(65 + index)}</span>
+                          <Stage3D
+                            ref={(handle) => { if (handle) compare3DRefs.current.set(image.id, handle); else compare3DRefs.current.delete(image.id); }}
+                            image={image}
+                            compact
+                            showObjectControls={false}
+                            syncId={image.id}
+                            syncCamera={compareCameraMode === "sync" ? compareCameraSync : null}
+                            onCameraChange={syncCompareCamera}
+                          />
+                        </div>}
                       <div className="compare-meta">
                         <div>
                           <strong>{image.name}</strong>

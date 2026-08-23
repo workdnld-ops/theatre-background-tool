@@ -137,8 +137,8 @@ h3 { font-size: 18px; }
 .note-row select { min-width: 0; height: 30px; border: 1px solid var(--line); background: #faf8f4; border-radius: 7px; padding: 0 9px; font-size: 11px; color: var(--ink); }
 .note-row > span { color: #968b80; font-size: 9px; }
 
-.compare-wrap { min-height: 0; flex: 1; background: #242321; border-radius: 14px; padding: 16px; overflow-y: auto; display: grid; place-items: center; }
-.compare-grid { width: 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; align-content: center; }
+.compare-wrap { min-height: 0; flex: 1; background: #242321; border-radius: 14px; padding: 12px 16px 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+.compare-grid { width: 100%; margin: auto 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; align-content: center; }
 .compare-grid.count-1 { grid-template-columns: minmax(0, 900px); justify-content: center; }
 .compare-card { min-width: 0; border: 2px solid transparent; border-radius: 10px; overflow: hidden; background: #111; box-shadow: 0 9px 28px #0005; }
 .compare-card.active { border-color: var(--accent); }
@@ -158,24 +158,36 @@ h3 { font-size: 18px; }
 .compare-empty span { font-size: 46px; color: #837d75; }
 .compare-empty h3 { margin: 8px 0 4px; }
 .compare-empty p { color: #99928a; font-size: 11px; }
+.compare-empty { margin: auto; }
+.compare-modebar { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.compare-view-switch, .compare-camera-switch { display: flex; align-items: center; gap: 4px; padding: 3px; border: 1px solid #ffffff18; border-radius: 9px; background: #151513; }
+.compare-view-switch button, .compare-camera-switch button { border: 0; border-radius: 6px; background: transparent; color: #aaa49d; padding: 6px 10px; font-size: 9px; font-weight: 900; }
+.compare-view-switch button.active, .compare-camera-switch button.active { background: #f2ede6; color: #2b2824; }
+.compare-camera-switch > span { margin: 0 4px 0 6px; color: #d1cbc4; font-size: 8px; font-weight: 900; }
+.compare-camera-switch small { margin: 0 6px; color: #8f8a84; font-size: 8px; }
+.compare-3d-frame { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #070809; }
+.compare-3d-frame .stage3d-shell { width: 100%; height: 100%; min-height: 0; border-radius: 0; }
 
 .stage3d-shell { position: relative; min-height: 0; flex: 1; overflow: hidden; border-radius: 14px; background: #070809; box-shadow: inset 0 0 0 1px #ffffff12; }
 .stage3d-canvas { position: absolute; inset: 0; display: grid; place-items: center; background: #050606; }
+.stage3d-shell.controls-open .stage3d-canvas { right: 330px; }
 .stage3d-canvas canvas { display: block; max-width: 100%; max-height: 100%; touch-action: none; cursor: grab; box-shadow: 0 16px 45px #000b; }
 .stage3d-canvas canvas:active { cursor: grabbing; }
 .stage3d-badges { position: absolute; z-index: 2; left: 14px; top: 14px; display: flex; flex-wrap: wrap; gap: 6px; pointer-events: none; }
 .stage3d-badges span { padding: 6px 9px; border: 1px solid #ffffff1c; border-radius: 999px; background: #151719d9; color: #d9d6d1; font-size: 9px; font-weight: 800; box-shadow: 0 5px 18px #0005; backdrop-filter: blur(7px); }
 .stage3d-badges .prototype { border-color: #db7452aa; color: #ffc0a9; }
-.stage3d-presets { position: absolute; z-index: 3; right: 14px; top: 14px; display: flex; gap: 5px; padding: 4px; border: 1px solid #ffffff1c; border-radius: 10px; background: #151719df; box-shadow: 0 5px 18px #0005; backdrop-filter: blur(8px); }
+.stage3d-presets { position: absolute; z-index: 3; right: 14px; top: 14px; display: flex; gap: 5px; padding: 4px; border: 1px solid #ffffff1c; border-radius: 10px; background: #151719df; box-shadow: 0 5px 18px #0005; backdrop-filter: blur(8px); transition: right .2s ease; }
+.stage3d-shell.controls-open .stage3d-presets { right: 344px; }
 .stage3d-presets button { border: 0; border-radius: 7px; background: transparent; color: #bdbab5; padding: 7px 10px; font-size: 9px; font-weight: 900; }
 .stage3d-presets button:hover { background: #ffffff12; color: white; }
 .stage3d-presets button.active { background: #f1ece4; color: #25211e; }
 .stage3d-presets button.reset-view { color: #dfb6a7; }
 .stage3d-presets button.reset-view:hover { background: #a9503838; color: #ffd4c5; }
-.stage3d-objects { position: absolute; z-index: 3; right: 14px; bottom: 14px; width: 306px; max-height: calc(100% - 74px); overflow-y: auto; padding: 11px; border: 1px solid #ffffff1c; border-radius: 11px; background: #111315ec; color: white; box-shadow: 0 5px 18px #0007; backdrop-filter: blur(9px); scrollbar-width: thin; }
+.stage3d-objects { position: absolute; z-index: 4; inset: 0 0 0 auto; width: 330px; box-sizing: border-box; overflow-y: auto; padding: 12px; border-left: 1px solid #ffffff1c; background: #111315f7; color: white; box-shadow: -8px 0 22px #0005; scrollbar-width: thin; }
 .stage3d-objects button, .stage3d-objects input, .stage3d-objects select { font: inherit; }
 .stage3d-objects-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .stage3d-objects-title > div { min-width: 0; display: grid; gap: 1px; }
+.stage3d-title-actions { display: flex !important; grid-auto-flow: column; gap: 4px !important; }
 .stage3d-objects-title strong { font-size: 11px; }
 .stage3d-objects-title span { color: #8f918f; font-size: 8px; }
 .stage3d-objects-title button, .stage3d-object-picker > button { border: 1px solid #ffffff1c; border-radius: 7px; background: #ffffff0c; color: #eeeae4; padding: 6px 8px; font-size: 8px; font-weight: 900; }
@@ -205,8 +217,14 @@ h3 { font-size: 18px; }
 .stage3d-person-actions button.danger { border-color: #a9503866; color: #f1ae98; }
 .stage3d-person-actions button:disabled { opacity: .4; }
 .stage3d-reset-all { width: 100%; margin-top: 7px; color: #b3afa9; }
+.stage3d-panel-open { position: absolute; z-index: 4; right: 14px; bottom: 54px; border: 1px solid #ffffff20; border-radius: 9px; background: #151719e8; color: #eee9e2; padding: 8px 11px; font-size: 9px; font-weight: 900; box-shadow: 0 5px 18px #0007; backdrop-filter: blur(8px); }
+.stage3d-panel-open:hover { background: #292b2d; }
+.stage3d-shell.compact .stage3d-presets { left: 7px; right: auto; top: 7px; gap: 2px; padding: 3px; }
+.stage3d-shell.compact .stage3d-presets button { padding: 4px 6px; font-size: 7px; }
+.stage3d-shell.compact .stage3d-presets button.reset-view { display: none; }
 .stage3d-notice { position: absolute; z-index: 6; left: 50%; top: 62px; transform: translateX(-50%); max-width: min(420px, 80%); border: 1px solid #e0785477; border-radius: 9px; background: #2b211dec; color: #ffd7c8; padding: 8px 12px; text-align: center; font-size: 9px; font-weight: 800; box-shadow: 0 8px 25px #0008; }
 .stage3d-help { position: absolute; z-index: 2; left: 14px; bottom: 14px; max-width: calc(100% - 28px); display: flex; align-items: center; gap: 10px; padding: 8px 11px; border: 1px solid #ffffff17; border-radius: 9px; background: #111315d9; color: white; box-shadow: 0 5px 18px #0005; pointer-events: none; backdrop-filter: blur(7px); }
+.stage3d-shell.controls-open .stage3d-help { max-width: calc(100% - 358px); }
 .stage3d-help strong { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
 .stage3d-help span { color: #9d9b97; font-size: 9px; }
 .stage3d-error { position: absolute; z-index: 5; inset: 50% auto auto 50%; transform: translate(-50%, -50%); max-width: 420px; border: 1px solid #a95038; border-radius: 10px; background: #291a17ed; color: #ffd2c4; padding: 14px 17px; text-align: center; font-size: 11px; line-height: 1.7; }
@@ -257,14 +275,21 @@ h3 { font-size: 18px; }
   .view-tabs button { padding-inline: 9px; }
   .canvas-wrap { min-height: 300px; padding: 8px; }
   .compare-grid { grid-template-columns: 1fr; }
+  .compare-modebar { align-items: stretch; flex-direction: column; }
+  .compare-view-switch, .compare-camera-switch { width: 100%; box-sizing: border-box; }
+  .compare-camera-switch { flex-wrap: wrap; }
+  .compare-camera-switch small { width: 100%; padding: 3px 4px; }
   .stage3d-shell { min-height: 520px; }
   .stage3d-presets { left: 10px; right: 10px; top: 10px; overflow-x: auto; }
   .stage3d-presets button { flex: 0 0 auto; }
   .stage3d-badges { top: 58px; left: 10px; }
-  .stage3d-objects { left: 10px; right: 10px; bottom: 10px; width: auto; }
-  .stage3d-objects { max-height: 300px; }
+  .stage3d-shell.controls-open .stage3d-canvas { right: 0; }
+  .stage3d-shell.controls-open .stage3d-presets { right: 10px; }
+  .stage3d-objects { inset: auto 10px 10px; width: auto; max-height: 300px; border: 1px solid #ffffff1c; border-radius: 11px; }
   .stage3d-help { left: 10px; bottom: 326px; }
   .stage3d-help span { display: none; }
+  .stage3d-shell.compact { min-height: 0; }
+  .stage3d-shell.compact .stage3d-presets { right: auto; }
   .note-row { grid-template-columns: 1fr; }
   .note-row label { margin-top: 2px; }
   .range-control { flex-basis: 42%; }
