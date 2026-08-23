@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 
-type ProjectionImage = { id?: string; url: string; name: string; note: string; transform: { scale: number; x: number; y: number; brightness: number; fit: "cover" | "contain" } };
+type ProjectionImage = { id?: string; url: string; name: string; note: string; transform: { scale: number; x: number; y: number; brightness: number; contrast: number; saturation: number; hue: number; fit: "width" | "height" } };
 type PresetName = "自由視角" | "前排" | "左側" | "右側" | "俯視";
 export type CameraPose = { fov: number; position: [number, number, number]; target: [number, number, number] };
 type Person = { id: string; x: number; z: number; rotation: number; heightCm: number; visible: boolean };
@@ -165,9 +165,11 @@ function projectionTexture(image: ProjectionImage) {
     source.onload = () => {
       const c = document.createElement("canvas"); c.width = 1920; c.height = 1080; const ctx = c.getContext("2d"); if (!ctx) return reject();
       ctx.fillStyle = "#050505"; ctx.fillRect(0, 0, c.width, c.height);
-      const base = image.transform.fit === "cover" ? Math.max(c.width / source.naturalWidth, c.height / source.naturalHeight) : Math.min(c.width / source.naturalWidth, c.height / source.naturalHeight);
+      const base = image.transform.fit === "height" ? c.height / source.naturalHeight : c.width / source.naturalWidth;
       const scale = base * image.transform.scale / 100, w = source.naturalWidth * scale, h = source.naturalHeight * scale;
-      ctx.filter = `brightness(${image.transform.brightness}%)`; ctx.drawImage(source, (c.width - w) / 2 + image.transform.x / 100 * c.width, (c.height - h) / 2 + image.transform.y / 100 * c.height, w, h);
+      const flatProjectionRatio = 1551 / 1920;
+      ctx.filter = `brightness(${image.transform.brightness}%) contrast(${image.transform.contrast}%) saturate(${image.transform.saturation}%) hue-rotate(${image.transform.hue}deg)`;
+      ctx.drawImage(source, (c.width - w) / 2 + image.transform.x / 100 * c.width / flatProjectionRatio, (c.height - h) / 2 + image.transform.y / 100 * c.height / flatProjectionRatio, w, h);
       const texture = new THREE.CanvasTexture(c); texture.colorSpace = THREE.SRGBColorSpace; texture.anisotropy = 4; resolve(texture);
     };
     source.onerror = reject; source.src = image.url;

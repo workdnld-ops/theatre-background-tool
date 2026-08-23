@@ -7,8 +7,17 @@ import Stage3D, { type CameraPose, type Stage3DHandle } from "./Stage3D";
 type ViewMode = "single" | "compare" | "threeD";
 type ComparePreviewMode = "flat" | "threeD";
 type CompareCameraMode = "sync" | "individual";
-type FitMode = "cover" | "contain";
-type Transform = { scale: number; x: number; y: number; brightness: number; fit: FitMode };
+type FitMode = "width" | "height";
+type Transform = {
+  scale: number;
+  x: number;
+  y: number;
+  brightness: number;
+  contrast: number;
+  saturation: number;
+  hue: number;
+  fit: FitMode;
+};
 type StoredImage = {
   id: string;
   name: string;
@@ -31,7 +40,7 @@ const DB_NAME = "stage-view-library";
 const STORE_NAME = "backgrounds";
 const CATEGORY_STORE_NAME = "categories";
 const OFFLINE_DISABLED_KEY = "stage-view-offline-disabled";
-const DEFAULT_TRANSFORM: Transform = { scale: 100, x: 0, y: 0, brightness: 100, fit: "cover" };
+const DEFAULT_TRANSFORM: Transform = { scale: 100, x: 0, y: 0, brightness: 100, contrast: 100, saturation: 100, hue: 0, fit: "width" };
 const MAX_COMPARE = 4;
 const STAGE_CANVAS_WIDTH = 1920;
 const STAGE_CANVAS_HEIGHT = 1080;
@@ -150,6 +159,49 @@ function loadHtmlImage(src: string) {
   });
 }
 
+function normalizeTransform(value: unknown): Transform {
+  const transform = value && typeof value === "object" ? value as Partial<Transform> & { fit?: string } : {};
+  const numberOr = (candidate: unknown, fallback: number) => typeof candidate === "number" && Number.isFinite(candidate) ? candidate : fallback;
+  return {
+    scale: numberOr(transform.scale, DEFAULT_TRANSFORM.scale),
+    x: numberOr(transform.x, DEFAULT_TRANSFORM.x),
+    y: numberOr(transform.y, DEFAULT_TRANSFORM.y),
+    brightness: numberOr(transform.brightness, DEFAULT_TRANSFORM.brightness),
+    contrast: numberOr(transform.contrast, DEFAULT_TRANSFORM.contrast),
+    saturation: numberOr(transform.saturation, DEFAULT_TRANSFORM.saturation),
+    hue: numberOr(transform.hue, DEFAULT_TRANSFORM.hue),
+    fit: transform.fit === "height" ? "height" : "width",
+  };
+}
+
+function pictureFilter(transform: Transform) {
+  return `brightness(${transform.brightness}%) contrast(${transform.contrast}%) saturate(${transform.saturation}%) hue-rotate(${transform.hue}deg)`;
+}
+
+function drawProjectedImage(
+  context: CanvasRenderingContext2D,
+  image: LibraryImage,
+  background: HTMLImageElement,
+  frameX: number,
+  frameY: number,
+  frameWidth: number,
+  frameHeight: number,
+  referenceWidth: number,
+  referenceHeight: number,
+) {
+  const baseScale = image.transform.fit === "height"
+    ? frameHeight / background.naturalHeight
+    : frameWidth / background.naturalWidth;
+  const scale = baseScale * (image.transform.scale / 100);
+  const width = background.naturalWidth * scale;
+  const height = background.naturalHeight * scale;
+  const imageX = frameX + (frameWidth - width) / 2 + (image.transform.x / 100) * referenceWidth;
+  const imageY = frameY + (frameHeight - height) / 2 + (image.transform.y / 100) * referenceHeight;
+  context.filter = pictureFilter(image.transform);
+  context.drawImage(background, imageX, imageY, width, height);
+  context.filter = "none";
+}
+
 function drawStageToContext(
   context: CanvasRenderingContext2D,
   image: LibraryImage,
@@ -166,21 +218,11 @@ function drawStageToContext(
   const projectionY = y + canvasHeight * PROJECTION_FRAME.top;
   const projectionWidth = canvasWidth * PROJECTION_FRAME.width;
   const projectionHeight = canvasHeight * PROJECTION_FRAME.height;
-  const baseScale = image.transform.fit === "cover"
-    ? Math.max(projectionWidth / background.naturalWidth, projectionHeight / background.naturalHeight)
-    : Math.min(projectionWidth / background.naturalWidth, projectionHeight / background.naturalHeight);
-  const scale = baseScale * (image.transform.scale / 100);
-  const width = background.naturalWidth * scale;
-  const height = background.naturalHeight * scale;
-  const imageX = projectionX + (projectionWidth - width) / 2 + (image.transform.x / 100) * canvasWidth;
-  const imageY = projectionY + (projectionHeight - height) / 2 + (image.transform.y / 100) * canvasHeight;
   context.save();
   context.beginPath();
   context.rect(x, y, canvasWidth, canvasHeight);
   context.clip();
-  context.filter = `brightness(${image.transform.brightness}%)`;
-  context.drawImage(background, imageX, imageY, width, height);
-  context.filter = "none";
+  drawProjectedImage(context, image, background, projectionX, projectionY, projectionWidth, projectionHeight, canvasWidth, canvasHeight);
   context.drawImage(overlay, x, y, canvasWidth, canvasHeight);
   context.restore();
 }
@@ -259,21 +301,27 @@ function StageCanvas({
       onPointerUp={() => (lastPointer.current = null)}
       onPointerCancel={() => (lastPointer.current = null)}
     >
-      <img
-        className="background-image"
-        src={image.url}
-        alt={image.name}
-        draggable={false}
+      <div
+        className="projection-frame"
         style={{
           left: `${PROJECTION_FRAME.left * 100}%`,
           top: `${PROJECTION_FRAME.top * 100}%`,
           width: `${PROJECTION_FRAME.width * 100}%`,
           height: `${PROJECTION_FRAME.height * 100}%`,
-          objectFit: image.transform.fit,
-          filter: `brightness(${image.transform.brightness}%)`,
-          transform: `translate3d(${image.transform.x / PROJECTION_FRAME.width}%, ${image.transform.y / PROJECTION_FRAME.height}%, 0) scale(${image.transform.scale / 100})`,
+          transform: `translate3d(${image.transform.x / PROJECTION_FRAME.width}%, ${image.transform.y / PROJECTION_FRAME.height}%, 0)`,
         }}
-      />
+      >
+        <img
+          className={`background-image fit-${image.transform.fit}`}
+          src={image.url}
+          alt={image.name}
+          draggable={false}
+          style={{
+            filter: pictureFilter(image.transform),
+            transform: `translate(-50%, -50%) scale(${image.transform.scale / 100})`,
+          }}
+        />
+      </div>
       <img className="stage-overlay" src={STAGE_OVERLAY_URL} alt="劇場舞台比例模擬框" draggable={false} />
       {label && <span className="compare-label">{label}</span>}
     </div>
@@ -358,6 +406,7 @@ export default function Home() {
   const [dragOverCompareId, setDragOverCompareId] = useState<string | null>(null);
   const [storageText, setStorageText] = useState("本機儲存");
   const [toast, setToast] = useState("");
+  const [adjustmentsCollapsed, setAdjustmentsCollapsed] = useState(() => localStorage.getItem("stage-view-adjustments-collapsed") === "1");
   const [offlineState, setOfflineState] = useState<OfflineState>(() => localStorage.getItem(OFFLINE_DISABLED_KEY) === "1" ? "disabled" : navigator.onLine ? "preparing" : "offline");
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -374,7 +423,7 @@ export default function Home() {
           .map((record) => {
             const url = URL.createObjectURL(record.blob);
             urlsRef.current.push(url);
-            return { ...record, note: record.note ?? "", categoryId: record.categoryId ?? null, transform: { ...DEFAULT_TRANSFORM, ...record.transform }, url };
+            return { ...record, note: record.note ?? "", categoryId: record.categoryId ?? null, transform: normalizeTransform(record.transform), url };
           });
         setImages(restored);
         setCategories(storedCategories.sort((a, b) => a.createdAt - b.createdAt));
@@ -385,6 +434,10 @@ export default function Home() {
     refreshStorage();
     return () => urlsRef.current.forEach((url) => URL.revokeObjectURL(url));
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem("stage-view-adjustments-collapsed", adjustmentsCollapsed ? "1" : "0");
+  }, [adjustmentsCollapsed]);
 
   useEffect(() => {
     const offlineDisabled = localStorage.getItem(OFFLINE_DISABLED_KEY) === "1";
@@ -671,6 +724,26 @@ export default function Home() {
     if (activeImage) updateTransform(activeImage.id, { ...DEFAULT_TRANSFORM });
   }
 
+  function alignActive(alignment: "center" | FitMode) {
+    if (!activeImage) return;
+    if (alignment === "center") {
+      updateTransform(activeImage.id, { ...activeImage.transform, x: 0, y: 0 });
+      return;
+    }
+    updateTransform(activeImage.id, { ...activeImage.transform, fit: alignment, scale: 100 });
+  }
+
+  function resetAdjustments() {
+    if (!activeImage) return;
+    updateTransform(activeImage.id, {
+      ...activeImage.transform,
+      brightness: DEFAULT_TRANSFORM.brightness,
+      contrast: DEFAULT_TRANSFORM.contrast,
+      saturation: DEFAULT_TRANSFORM.saturation,
+      hue: DEFAULT_TRANSFORM.hue,
+    });
+  }
+
   async function exportComposite(image: LibraryImage) {
     const [background, overlay] = await Promise.all([loadHtmlImage(image.url), loadHtmlImage(STAGE_OVERLAY_URL)]);
     const canvas = document.createElement("canvas");
@@ -680,10 +753,42 @@ export default function Home() {
     if (!context) return;
     drawStageToContext(context, image, background, overlay, 0, 0, canvas.width, canvas.height);
     const link = document.createElement("a");
-    link.download = `${image.name}-劇場模擬.png`;
+    link.download = `${image.name}-劇場預覽.png`;
     link.href = canvas.toDataURL("image/png");
     link.click();
-    showToast("模擬圖已匯出。" );
+    showToast("預覽圖已匯出。" );
+  }
+
+  async function exportCroppedProjection(image: LibraryImage) {
+    const background = await loadHtmlImage(image.url);
+    const canvas = document.createElement("canvas");
+    canvas.width = STAGE_CANVAS_WIDTH;
+    canvas.height = STAGE_CANVAS_HEIGHT;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.fillStyle = "#000";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.save();
+    context.beginPath();
+    context.rect(0, 0, canvas.width, canvas.height);
+    context.clip();
+    drawProjectedImage(
+      context,
+      image,
+      background,
+      0,
+      0,
+      canvas.width,
+      canvas.height,
+      canvas.width / PROJECTION_FRAME.width,
+      canvas.height / PROJECTION_FRAME.height,
+    );
+    context.restore();
+    const link = document.createElement("a");
+    link.download = `${image.name}-投影裁切.png`;
+    link.href = canvas.toDataURL("image/png");
+    link.click();
+    showToast("已匯出套用畫面調整的 16:9 裁切圖。" );
   }
 
   function syncCompareCamera(sourceId: string, pose: CameraPose) {
@@ -932,7 +1037,10 @@ export default function Home() {
             <div><p className="eyebrow">PREVIEW</p><h2>{viewMode === "single" ? "舞台預覽" : viewMode === "compare" ? `${comparePreviewMode === "threeD" ? "3D " : ""}比較背景（${comparedImages.length}/${MAX_COMPARE}）` : "3D 舞台預覽"}</h2></div>
             <div className="stage-toolbar-controls">
               <div className="mode-actions">
-                {viewMode === "single" && <button className="export-action" disabled={!activeImage} onClick={() => activeImage && void exportComposite(activeImage)}>↓ 匯出 PNG</button>}
+                {viewMode === "single" && <>
+                  <button className="export-secondary" disabled={!activeImage} onClick={() => activeImage && void exportCroppedProjection(activeImage)}>↓ 匯出裁切圖</button>
+                  <button className="export-action" disabled={!activeImage} onClick={() => activeImage && void exportComposite(activeImage)}>↓ 匯出預覽</button>
+                </>}
                 {viewMode === "compare" && <>
                   <button className="clear-action" disabled={!compareIds.length} onClick={() => { setCompareIds([]); showToast("已清空比較選擇。"); }}>清空重選</button>
                   <button className="export-action" disabled={!comparedImages.length} onClick={() => void exportComparison()}>↓ 匯出{comparePreviewMode === "threeD" ? " 3D" : ""}比較圖</button>
@@ -962,10 +1070,21 @@ export default function Home() {
               {activeImage && (
                 <div className="editor-panel">
                   <div className="control-row">
-                    <div className="range-control"><label>縮放 <b>{activeImage.transform.scale}%</b></label><input type="range" min="60" max="220" value={activeImage.transform.scale} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, scale: Number(e.target.value) })} /></div>
-                    <div className="range-control"><label>亮度 <b>{activeImage.transform.brightness}%</b></label><input type="range" min="30" max="140" value={activeImage.transform.brightness} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, brightness: Number(e.target.value) })} /></div>
-                    <div className="fit-control"><label>填滿方式</label><div><button className={activeImage.transform.fit === "cover" ? "active" : ""} onClick={() => updateTransform(activeImage.id, { ...activeImage.transform, fit: "cover" })}>填滿</button><button className={activeImage.transform.fit === "contain" ? "active" : ""} onClick={() => updateTransform(activeImage.id, { ...activeImage.transform, fit: "contain" })}>完整</button></div></div>
+                    <div className="range-control scale-control"><label>縮放 <b>{activeImage.transform.scale}%</b></label><input aria-label="圖片縮放，雙擊重設為 100%" title="雙擊回到 100%" type="range" min="40" max="220" value={activeImage.transform.scale} onDoubleClick={() => updateTransform(activeImage.id, { ...activeImage.transform, scale: 100 })} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, scale: Number(e.target.value) })} /></div>
+                    <div className="fit-control alignment-control"><label>快速對齊</label><div><button onClick={() => alignActive("center")}>置中</button><button className={activeImage.transform.fit === "width" ? "active" : ""} onClick={() => alignActive("width")}>左右填滿</button><button className={activeImage.transform.fit === "height" ? "active" : ""} onClick={() => alignActive("height")}>上下填滿</button></div></div>
                     <button className="secondary" onClick={resetActive}>重設</button>
+                  </div>
+                  <div className={`image-adjustments ${adjustmentsCollapsed ? "collapsed" : ""}`}>
+                    <button className="image-adjustments-toggle" aria-expanded={!adjustmentsCollapsed} onClick={() => setAdjustmentsCollapsed((current) => !current)}>
+                      <span><strong>畫面調整</strong><small>亮度、對比、飽和度與色調</small></span><b>{adjustmentsCollapsed ? "展開 ▾" : "收合 ▴"}</b>
+                    </button>
+                    {!adjustmentsCollapsed && <div className="image-adjustments-body">
+                      <div className="range-control"><label>亮度 <b>{activeImage.transform.brightness}%</b></label><input type="range" min="30" max="160" value={activeImage.transform.brightness} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, brightness: Number(e.target.value) })} /></div>
+                      <div className="range-control"><label>對比 <b>{activeImage.transform.contrast}%</b></label><input type="range" min="30" max="200" value={activeImage.transform.contrast} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, contrast: Number(e.target.value) })} /></div>
+                      <div className="range-control"><label>飽和度 <b>{activeImage.transform.saturation}%</b></label><input type="range" min="0" max="200" value={activeImage.transform.saturation} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, saturation: Number(e.target.value) })} /></div>
+                      <div className="range-control"><label>色調 <b>{activeImage.transform.hue}°</b></label><input type="range" min="-180" max="180" value={activeImage.transform.hue} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, hue: Number(e.target.value) })} /></div>
+                      <button className="secondary adjustment-reset" onClick={resetAdjustments}>重設修圖</button>
+                    </div>}
                   </div>
                   <div className="note-row">
                     <label htmlFor="image-category">圖片分類</label>
