@@ -41,8 +41,8 @@ const normalizeRotation = (n: number) => { let r = n % 360; if (r > 180) r -= 36
 const copyDefaults = (): Layout => ({ version: 6, people: DEFAULT_PEOPLE.map(p => ({ ...p })), backdrop: { ...DEFAULT_BACKDROP } });
 const fit169 = (w: number, h: number) => w / Math.max(1, h) > 16 / 9 ? { width: h * 16 / 9, height: h } : { width: w, height: w * 9 / 16 };
 const renderPixelRatio = (width: number, height: number, compact: boolean) => {
-  const pixelBudget = compact ? 250_000 : 1_600_000;
-  return Math.max(.65, Math.min(devicePixelRatio || 1, 1, Math.sqrt(pixelBudget / Math.max(1, width * height))));
+  const pixelBudget = compact ? 450_000 : 2_600_000, dprLimit = compact ? 1.25 : 1.5;
+  return Math.max(.75, Math.min(devicePixelRatio || 1, dprLimit, Math.sqrt(pixelBudget / Math.max(1, width * height))));
 };
 const validTuple = (v: unknown): v is [number, number, number] => Array.isArray(v) && v.length === 3 && v.every(n => typeof n === "number" && Number.isFinite(n));
 
@@ -123,13 +123,13 @@ function applyPose(camera: THREE.PerspectiveCamera, controls: OrbitControls, pos
 function currentPose(camera: THREE.PerspectiveCamera, controls: OrbitControls): CameraPose {
   return { fov: camera.fov, position: camera.position.toArray() as [number, number, number], target: controls.target.toArray() as [number, number, number] };
 }
-const lit = (color: number, _roughness = .78, _metalness = .02) => new THREE.MeshLambertMaterial({ color });
+const lit = (color: number, roughness = .78, metalness = .02) => new THREE.MeshStandardMaterial({ color, roughness, metalness });
 const unlit = (color: number) => new THREE.MeshBasicMaterial({ color, toneMapped: false });
 function box(parent: THREE.Object3D, size: [number, number, number], position: [number, number, number], material: THREE.Material, cast = false, receive = true) {
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(...size), material); mesh.position.set(...position); mesh.castShadow = cast; mesh.receiveShadow = receive; parent.add(mesh); return mesh;
 }
-function instancedBoxes(parent: THREE.Object3D, size: [number, number, number], positions: [number, number, number][], material: THREE.Material) {
-  const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(...size), material, positions.length), matrix = new THREE.Matrix4(); positions.forEach((position, i) => { matrix.makeTranslation(...position); mesh.setMatrixAt(i, matrix) }); parent.add(mesh); return mesh;
+function instancedBoxes(parent: THREE.Object3D, size: [number, number, number], positions: [number, number, number][], material: THREE.Material, cast = false) {
+  const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(...size), material, positions.length), matrix = new THREE.Matrix4(); positions.forEach((position, i) => { matrix.makeTranslation(...position); mesh.setMatrixAt(i, matrix) }); mesh.castShadow = cast; parent.add(mesh); return mesh;
 }
 function makePerson(material: THREE.Material) {
   const part = (geometry: THREE.BufferGeometry, x: number, y: number, z = 0, rotationZ = 0) => { if (rotationZ) geometry.rotateZ(rotationZ); geometry.translate(x, y, z); return geometry };
@@ -139,7 +139,7 @@ function makePerson(material: THREE.Material) {
     part(new THREE.CylinderGeometry(.055, .07, .68, 6), -.255, 1.04, 0, -.08), part(new THREE.CylinderGeometry(.055, .07, .68, 6), .255, 1.04, 0, .08),
   ];
   const geometry = mergeGeometries(parts, false); parts.forEach(g => g.dispose());
-  const group = new THREE.Group(); if (geometry) group.add(new THREE.Mesh(geometry, material)); return group;
+  const group = new THREE.Group(); if (geometry) { const mesh = new THREE.Mesh(geometry, material); mesh.castShadow = true; group.add(mesh) } return group;
 }
 function makePanel(panelMat: THREE.Material, frameMat: THREE.Material, width: number, height: number, style: BackdropStyle) {
   const g = new THREE.Group();
@@ -161,12 +161,12 @@ function projectionTexture(image: ProjectionImage) {
   return new Promise<THREE.CanvasTexture>((resolve, reject) => {
     const source = new Image();
     source.onload = () => {
-      const c = document.createElement("canvas"); c.width = 1280; c.height = 720; const ctx = c.getContext("2d"); if (!ctx) return reject();
+      const c = document.createElement("canvas"); c.width = 1920; c.height = 1080; const ctx = c.getContext("2d"); if (!ctx) return reject();
       ctx.fillStyle = "#050505"; ctx.fillRect(0, 0, c.width, c.height);
       const base = image.transform.fit === "cover" ? Math.max(c.width / source.naturalWidth, c.height / source.naturalHeight) : Math.min(c.width / source.naturalWidth, c.height / source.naturalHeight);
       const scale = base * image.transform.scale / 100, w = source.naturalWidth * scale, h = source.naturalHeight * scale;
       ctx.filter = `brightness(${image.transform.brightness}%)`; ctx.drawImage(source, (c.width - w) / 2 + image.transform.x / 100 * c.width, (c.height - h) / 2 + image.transform.y / 100 * c.height, w, h);
-      const texture = new THREE.CanvasTexture(c); texture.colorSpace = THREE.SRGBColorSpace; texture.anisotropy = 1; resolve(texture);
+      const texture = new THREE.CanvasTexture(c); texture.colorSpace = THREE.SRGBColorSpace; texture.anisotropy = 4; resolve(texture);
     };
     source.onerror = reject; source.src = image.url;
   });
@@ -197,8 +197,8 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
   useEffect(() => { if (showObjectControls) try { localStorage.setItem("stage3d-controls-collapsed", controlsCollapsed ? "1" : "0") } catch { /* optional */ } }, [controlsCollapsed, showObjectControls]);
   useEffect(() => {
     const mount = mountRef.current; if (!mount) return; let frame = 0, renderer: THREE.WebGLRenderer;
-    try { renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: false, powerPreference: "high-performance" }) } catch { setError("這個瀏覽器目前無法啟動 3D 畫面，請確認硬體加速已開啟。"); return }
-    const size = fit169(mount.clientWidth, mount.clientHeight); renderer.setPixelRatio(renderPixelRatio(size.width, size.height, compact)); renderer.setSize(size.width, size.height, false); renderer.outputColorSpace = THREE.SRGBColorSpace; renderer.toneMapping = THREE.NoToneMapping; renderer.shadowMap.enabled = false; renderer.domElement.tabIndex = 0; mount.appendChild(renderer.domElement); rendererRef.current = renderer;
+    try { renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: false, powerPreference: "high-performance" }) } catch { setError("這個瀏覽器目前無法啟動 3D 畫面，請確認硬體加速已開啟。"); return }
+    const size = fit169(mount.clientWidth, mount.clientHeight); renderer.setPixelRatio(renderPixelRatio(size.width, size.height, compact)); renderer.setSize(size.width, size.height, false); renderer.outputColorSpace = THREE.SRGBColorSpace; renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = .9; renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = true; renderer.domElement.tabIndex = 0; mount.appendChild(renderer.domElement); rendererRef.current = renderer;
     const scene = new THREE.Scene(); scene.background = new THREE.Color(0x070809); sceneRef.current = scene;
     const pose = readCamera(cameraKeyRef.current) ?? TEMPLATE_CAMERA, camera = new THREE.PerspectiveCamera(pose.fov, 16 / 9, .1, 180); camera.position.set(...pose.position); cameraRef.current = camera;
     const controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = false; controls.target.set(...pose.target); controls.minDistance = 2.5; controls.maxDistance = 140; controls.maxPolarAngle = Math.PI * .92; controls.update(); controlsRef.current = controls;
@@ -207,7 +207,7 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     const emitCamera = () => { requestRender(); if (!applyingSyncRef.current) onCameraChangeRef.current?.(syncId, currentPose(camera, controls)) };
     const remember = () => { if (!dragRef.current) { writeCamera(cameraKeyRef.current, camera, controls); setPreset("自由視角") } };
     controls.addEventListener("change", emitCamera); controls.addEventListener("end", remember);
-    scene.add(new THREE.HemisphereLight(0xaab7c2, 0x201915, 1.35)); const key = new THREE.DirectionalLight(0xffdfbd, 1.45); key.position.set(-6, 12, -4); key.target.position.set(0, 0, 7); scene.add(key, key.target);
+    scene.add(new THREE.HemisphereLight(0x9cb5ca, 0x19120f, 1.1)); const key = new THREE.SpotLight(0xffe4c5, 760, 52, Math.PI / 4.5, .42, 1.4); key.position.set(-5, 15, -5); key.target.position.set(0, 0, 7); key.castShadow = true; key.shadow.mapSize.set(1024, 1024); scene.add(key, key.target); const fill = new THREE.DirectionalLight(0x8aa9d7, 1.6); fill.position.set(7, 9, -8); scene.add(fill);
     const black = lit(0x090909, .92), curtain = lit(0x050505, 1), floor = lit(0x3b3936, .88), apron = lit(0x3c241b, .9), frameMat = lit(0xaaa5ba, .35, .2), line = lit(0xc8c3ba, .82); personMatRef.current = lit(0x747678, .72, .05); backdropMatsRef.current = { panel: unlit(0x765548), frame: unlit(0x2b2927) };
     box(scene, [27, .24, STAGE.depth], [0, -.12, STAGE.depth / 2], floor);
     const shape = new THREE.Shape(); shape.moveTo(-9.1, 0); shape.lineTo(9.1, 0); shape.quadraticCurveTo(0, STAGE.apronDepth * 2, -9.1, 0); const apronMesh = new THREE.Mesh(new THREE.ShapeGeometry(shape, 48), apron); apronMesh.rotation.x = -Math.PI / 2; apronMesh.position.y = -.14; scene.add(apronMesh);
@@ -220,7 +220,7 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     box(scene, [.58, 9.5, 1.05], [-8, 4.55, -.05], black); box(scene, [.58, 9.5, 1.05], [8, 4.55, -.05], black); box(scene, [16.58, .65, 1.05], [0, 8.82, -.05], black);
     box(scene, [.22, 8.95, .2], [-7.82, 4.37, -.65], frameMat); box(scene, [.22, 8.95, .2], [7.82, 4.37, -.65], frameMat); box(scene, [15.86, .22, .2], [0, 8.73, -.65], frameMat);
     box(scene, [27, 10.5, .28], [0, 5, STAGE.depth], black); box(scene, [.34, 10.5, STAGE.depth + 2.2], [-12.8, 5, 8.3], black); box(scene, [.34, 10.5, STAGE.depth + 2.2], [12.8, 5, 8.3], black);
-    const legCenter = INNER + LEG_WIDTH / 2; instancedBoxes(scene, [LEG_WIDTH, 8.5, .13], LEG_DEPTHS.flatMap(z => [[-legCenter, 4.25, z], [legCenter, 4.25, z]] as [number, number, number][]), curtain);
+    const legCenter = INNER + LEG_WIDTH / 2; instancedBoxes(scene, [LEG_WIDTH, 8.5, .13], LEG_DEPTHS.flatMap(z => [[-legCenter, 4.25, z], [legCenter, 4.25, z]] as [number, number, number][]), curtain, true);
     const screenMat = new THREE.MeshBasicMaterial({ color: 0x25282d, side: THREE.DoubleSide, toneMapped: false, fog: false }); screenMatRef.current = screenMat; const screen = new THREE.Mesh(new THREE.PlaneGeometry(SCREEN_WIDTH, SCREEN_HEIGHT), screenMat); screen.position.set(0, SCREEN_HEIGHT / 2, STAGE.cycloramaDepth); screen.rotation.y = Math.PI; scene.add(screen); box(scene, [STAGE.openingWidth, STAGE.openingHeight - SCREEN_HEIGHT, .12], [0, SCREEN_HEIGHT + (STAGE.openingHeight - SCREEN_HEIGHT) / 2, STAGE.cycloramaDepth + .04], black);
     const selectionBox = new THREE.Box3(), helper = new THREE.Box3Helper(selectionBox, 0xff6f42); helper.visible = false; helper.renderOrder = 10; scene.add(helper); boxRef.current = { box: selectionBox, helper };
     const ray = new THREE.Raycaster(), pointer = new THREE.Vector2(), plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -239,6 +239,7 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     const scene = sceneRef.current, mat = personMatRef.current; if (!scene || !mat) return; const ids = new Set(layout.people.map(p => p.id));
     peopleRef.current.forEach((g, id) => { if (!ids.has(id)) { scene.remove(g); g.traverse(o => { if (o instanceof THREE.Mesh) o.geometry.dispose() }); peopleRef.current.delete(id) } });
     layout.people.forEach(p => { let g = peopleRef.current.get(p.id); if (!g) { g = makePerson(mat); g.userData.selection = { kind: "person", id: p.id } satisfies Selection; scene.add(g); peopleRef.current.set(p.id, g) } g.position.set(p.x, 0, p.z); g.rotation.y = THREE.MathUtils.degToRad(p.rotation); g.scale.setScalar(p.heightCm / 100 / PERSON_HEIGHT); g.visible = p.visible });
+    if (rendererRef.current) rendererRef.current.shadowMap.needsUpdate = true;
     renderRef.current();
   }, [layout.people]);
   useEffect(() => {
@@ -247,6 +248,7 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     if (!g) { g = new THREE.Group(); g.userData.selection = { kind: "backdrop" } satisfies Selection; scene.add(g); backdropRef.current = g }
     if (backdropSpecRef.current !== spec) { while (g.children.length) g.children.pop()?.traverse(o => { if (o instanceof THREE.Mesh) o.geometry.dispose() }); const width = b.widthCm / 100, height = b.heightCm / 100, gap = b.gapCm / 100, total = b.count * width + (b.count - 1) * gap; for (let i = 0; i < b.count; i++) { const panel = makePanel(mats.panel, mats.frame, width, height, b.style); panel.position.x = -total / 2 + width / 2 + i * (width + gap); g.add(panel) } backdropSpecRef.current = spec }
     g.position.set(b.x, 0, b.z); g.rotation.y = THREE.MathUtils.degToRad(b.rotation); g.visible = b.visible;
+    if (rendererRef.current) rendererRef.current.shadowMap.needsUpdate = true;
     renderRef.current();
   }, [layout.backdrop]);
   useEffect(() => { const valid = new Set(layout.people.map(p => p.id)), next = selectedPersonIds.filter(id => valid.has(id)); if (next.length !== selectedPersonIds.length) setSelectedPersonIds(next); if (selection.kind === "person" && !valid.has(selection.id)) setSelection({ kind: "backdrop" }) }, [layout.people, selectedPersonIds, selection]);
