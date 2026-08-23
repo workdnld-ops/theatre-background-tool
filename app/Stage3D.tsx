@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 
-type ProjectionImage = { id?: string; url: string; name: string; note: string; transform: { scale: number; x: number; y: number; brightness: number; contrast: number; saturation: number; hue: number; temperature: number; fit: "width" | "height" } };
+type ProjectionImage = { id?: string; url: string; posterUrl?: string; mediaType: "image" | "video"; playbackTime: number; name: string; note: string; transform: { scale: number; x: number; y: number; brightness: number; contrast: number; saturation: number; hue: number; temperature: number; fit: "width" | "height" } };
 type PresetName = "自由視角" | "前排" | "左側" | "右側" | "俯視";
 export type CameraPose = { fov: number; position: [number, number, number]; target: [number, number, number] };
 type Person = { id: string; x: number; z: number; rotation: number; heightCm: number; visible: boolean };
@@ -13,14 +13,13 @@ type Layout = { version: 6; people: Person[]; backdrop: Backdrop };
 type Selection = { kind: "person"; id: string } | { kind: "backdrop" };
 type DragState = { selection: Selection; lastX: number; lastZ: number; x: number; z: number; personIds?: string[] };
 type Legacy = { peopleVisible?: boolean; personHeightCm?: number; backdrop252Visible?: boolean; backdrop202Visible?: boolean; backdrop158Visible?: boolean };
-type StageHistorySnapshot = { layout: Layout; camera: CameraPose | null };
-type StageHistory = { past: StageHistorySnapshot[]; future: StageHistorySnapshot[] };
+type LayoutHistory = { past: Layout[]; future: Layout[] };
 
 const STAGE = { width: 27, openingWidth: 15.42, openingHeight: 8.5, apronDepth: 2.6, depth: 18.81, cycloramaDepth: 10.65 };
 const INNER = 6.6, LEG_WIDTH = STAGE.openingWidth / 2 - INNER, SCREEN_WIDTH = INNER * 2, SCREEN_HEIGHT = SCREEN_WIDTH * 9 / 16;
 const LEG_DEPTHS = [1.1, 3.05, 5, 6.95, 8.9], LINE_GAP = .92, LINE_COUNT = 12, PERSON_HEIGHT = 1.7, MAX_PEOPLE = 50, BACKDROP_DEPTH = .48;
 const SELECTION_MARKER_NAME = "selection-marker";
-const MAX_LAYOUT_HISTORY = 15, LAYOUT_HISTORIES = new Map<string, StageHistory>();
+const MAX_LAYOUT_HISTORY = 15, LAYOUT_HISTORIES = new Map<string, LayoutHistory>();
 const LEGACY_CAMERA_KEY = "stage-view-template-camera-v3", CAMERA_KEY_PREFIX = "stage-view-free-camera-v1:", OLD_KEY = "stage-view-objects-v1", LAYOUT_KEY = "stage-view-layout-v2", LAYOUT_KEY_PREFIX = "stage-view-layout-v3:", LAYOUT_CLIPBOARD_KEY = "stage-view-layout-clipboard-v1";
 const DEFAULT_PEOPLE: Person[] = [
   ["person-1", -5, 3.2, -10], ["person-2", -4.15, 5.8, 7], ["person-3", -1.25, 4.2, -5],
@@ -37,6 +36,8 @@ type Stage3DProps = {
   syncId?: string;
   syncCamera?: { sourceId: string; serial: number; pose: CameraPose } | null;
   onCameraChange?: (sourceId: string, pose: CameraPose) => void;
+  onVideoFrame?: (time: number, posterBlob: Blob) => void;
+  onVideoError?: () => void;
 };
 
 const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
@@ -173,38 +174,57 @@ function projectionTexture(image: ProjectionImage) {
       const scale = base * image.transform.scale / 100, w = source.naturalWidth * scale, h = source.naturalHeight * scale;
       const flatProjectionRatio = 1551 / 1920;
       const warmth = Math.abs(image.transform.temperature), temperatureHue = image.transform.temperature > 0 ? -warmth * .1 : warmth * .1;
-      ctx.filter = `brightness(${image.transform.brightness}%) contrast(${image.transform.contrast}%) saturate(${image.transform.saturation + warmth * .18}%) sepia(${warmth * .16}%) hue-rotate(${image.transform.hue + temperatureHue}deg)`;
+      ctx.filter = image.mediaType === "image" ? `brightness(${image.transform.brightness}%) contrast(${image.transform.contrast}%) saturate(${image.transform.saturation + warmth * .18}%) sepia(${warmth * .16}%) hue-rotate(${image.transform.hue + temperatureHue}deg)` : "none";
       ctx.drawImage(source, (c.width - w) / 2 + image.transform.x / 100 * c.width / flatProjectionRatio, (c.height - h) / 2 + image.transform.y / 100 * c.height / flatProjectionRatio, w, h);
       const texture = new THREE.CanvasTexture(c); texture.colorSpace = THREE.SRGBColorSpace; texture.anisotropy = 4; resolve(texture);
     };
-    source.onerror = reject; source.src = image.url;
+    source.onerror = reject; source.src = image.mediaType === "video" ? image.posterUrl ?? "" : image.url;
   });
 }
 
-const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image, compact = false, showObjectControls = true, syncId = "main", syncCamera = null, onCameraChange }, ref) {
+function captureVideoPoster(video: HTMLVideoElement) {
+  return new Promise<Blob>((resolve, reject) => {
+    if (!video.videoWidth || !video.videoHeight) return reject(new Error("video frame unavailable"));
+    const scale = Math.min(1, 1920 / video.videoWidth, 1080 / video.videoHeight), canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale)); canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    const context = canvas.getContext("2d"); if (!context) return reject(new Error("canvas unavailable")); context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("poster capture failed")), "image/jpeg", .9);
+  });
+}
+
+function drawVideoProjection(context: CanvasRenderingContext2D, canvas: HTMLCanvasElement, image: ProjectionImage, video: HTMLVideoElement) {
+  context.fillStyle = "#050505"; context.fillRect(0, 0, canvas.width, canvas.height);
+  const base = image.transform.fit === "height" ? canvas.height / video.videoHeight : canvas.width / video.videoWidth, scale = base * image.transform.scale / 100, width = video.videoWidth * scale, height = video.videoHeight * scale, flatProjectionRatio = 1551 / 1920;
+  context.drawImage(video, (canvas.width - width) / 2 + image.transform.x / 100 * canvas.width / flatProjectionRatio, (canvas.height - height) / 2 + image.transform.y / 100 * canvas.height / flatProjectionRatio, width, height);
+}
+
+const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image, compact = false, showObjectControls = true, syncId = "main", syncCamera = null, onCameraChange, onVideoFrame, onVideoError }, ref) {
   const objectKeyRef = useRef(objectLayoutKey(image));
   const mountRef = useRef<HTMLDivElement>(null), rendererRef = useRef<THREE.WebGLRenderer | null>(null), cameraRef = useRef<THREE.PerspectiveCamera | null>(null), controlsRef = useRef<OrbitControls | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null), videoFrameRef = useRef(0), drawVideoRef = useRef<() => void>(() => {}), videoSavedTimeRef = useRef(0), imageRef = useRef(image);
   const sceneRef = useRef<THREE.Scene | null>(null), screenMatRef = useRef<THREE.MeshBasicMaterial | null>(null), textureRef = useRef<THREE.Texture | null>(null), personMatRef = useRef<THREE.Material | null>(null), markerMatRef = useRef<THREE.Material | null>(null);
   const backdropMatsRef = useRef<{ panel: THREE.Material; frame: THREE.Material } | null>(null), peopleRef = useRef(new Map<string, THREE.Group>()), backdropRef = useRef<THREE.Group | null>(null), backdropSpecRef = useRef("");
-  const dragRef = useRef<DragState | null>(null), renderRef = useRef<() => void>(() => {}), flashSelectionRef = useRef<(duration?: number) => void>(() => {}), markerVisibleRef = useRef(false), visibleMarkersRef = useRef<THREE.Object3D[]>([]), markerTimerRef = useRef<number | null>(null), timerRef = useRef<number | null>(null), applyingSyncRef = useRef(false), onCameraChangeRef = useRef(onCameraChange);
+  const dragRef = useRef<DragState | null>(null), renderRef = useRef<() => void>(() => {}), flashSelectionRef = useRef<(duration?: number) => void>(() => {}), markerVisibleRef = useRef(false), visibleMarkersRef = useRef<THREE.Object3D[]>([]), markerTimerRef = useRef<number | null>(null), timerRef = useRef<number | null>(null), applyingSyncRef = useRef(false), onCameraChangeRef = useRef(onCameraChange), onVideoFrameRef = useRef(onVideoFrame), onVideoErrorRef = useRef(onVideoError);
   const [preset, setPreset] = useState<PresetName>("自由視角"), [layout, rawSetLayout] = useState<Layout>(() => readLayout(objectKeyRef.current)), [selection, setSelection] = useState<Selection>({ kind: "backdrop" }), [error, setError] = useState(""), [notice, setNotice] = useState("");
   const [controlsCollapsed, setControlsCollapsed] = useState(() => localStorage.getItem("stage3d-controls-collapsed") === "1");
+  const [videoPlaying, setVideoPlaying] = useState(false);
   const [clipboardReady, setClipboardReady] = useState(() => { try { return Boolean(localStorage.getItem(LAYOUT_CLIPBOARD_KEY)) } catch { return false } });
   const [activePersonId, setActivePersonId] = useState(() => layout.people[0]?.id ?? "");
   const [selectedPersonIds, setSelectedPersonIds] = useState<string[]>([]);
-  const layoutRef = useRef(layout), selectionRef = useRef(selection), selectedPersonIdsRef = useRef(selectedPersonIds), cameraKeyRef = useRef(cameraKey(image)), layoutHistoryGroupRef = useRef<{ key: string; captured: boolean; snapshot: StageHistorySnapshot } | null>(null); layoutRef.current = layout; selectionRef.current = selection; selectedPersonIdsRef.current = selectedPersonIds; cameraKeyRef.current = cameraKey(image);
+  const layoutRef = useRef(layout), selectionRef = useRef(selection), selectedPersonIdsRef = useRef(selectedPersonIds), cameraKeyRef = useRef(cameraKey(image)), layoutHistoryGroupRef = useRef<{ key: string; captured: boolean; snapshot: Layout } | null>(null); layoutRef.current = layout; selectionRef.current = selection; selectedPersonIdsRef.current = selectedPersonIds; cameraKeyRef.current = cameraKey(image);
   onCameraChangeRef.current = onCameraChange;
+  onVideoFrameRef.current = onVideoFrame; onVideoErrorRef.current = onVideoError;
+  imageRef.current = image;
   const showNotice = (message: string) => { setNotice(message); if (timerRef.current) clearTimeout(timerRef.current); timerRef.current = window.setTimeout(() => setNotice(""), 2600) };
   const getLayoutHistory = (key = objectKeyRef.current) => { let history = LAYOUT_HISTORIES.get(key); if (!history) { history = { past: [], future: [] }; LAYOUT_HISTORIES.set(key, history) } return history };
-  const currentStageSnapshot = (): StageHistorySnapshot => ({ layout: copyLayout(layoutRef.current), camera: cameraRef.current && controlsRef.current ? currentPose(cameraRef.current, controlsRef.current) : null });
-  const pushStageHistory = (snapshot: StageHistorySnapshot, key = objectKeyRef.current) => { const history = getLayoutHistory(key); history.past.push(snapshot); history.past = history.past.slice(-MAX_LAYOUT_HISTORY); history.future = [] };
-  const beginLayoutInteraction = () => { layoutHistoryGroupRef.current = { key: objectKeyRef.current, captured: false, snapshot: currentStageSnapshot() } };
-  const endLayoutInteraction = (includeCamera = false) => { const group = layoutHistoryGroupRef.current; if (includeCamera && group && !group.captured && JSON.stringify(group.snapshot.camera) !== JSON.stringify(currentStageSnapshot().camera)) pushStageHistory(group.snapshot, group.key); layoutHistoryGroupRef.current = null };
+  const pushLayoutHistory = (snapshot: Layout, key = objectKeyRef.current) => { const history = getLayoutHistory(key); history.past.push(snapshot); history.past = history.past.slice(-MAX_LAYOUT_HISTORY); history.future = [] };
+  const beginLayoutInteraction = () => { layoutHistoryGroupRef.current = { key: objectKeyRef.current, captured: false, snapshot: copyLayout(layoutRef.current) } };
+  const endLayoutInteraction = () => { layoutHistoryGroupRef.current = null };
   const setLayout = (action: SetStateAction<Layout>) => rawSetLayout(current => {
     const next = typeof action === "function" ? action(current) : action;
     if (next === current || JSON.stringify(next) === JSON.stringify(current)) return current;
     const key = objectKeyRef.current, group = layoutHistoryGroupRef.current, shouldCapture = !group || group.key !== key || !group.captured;
-    if (shouldCapture) { pushStageHistory(group?.key === key ? group.snapshot : { layout: copyLayout(current), camera: cameraRef.current && controlsRef.current ? currentPose(cameraRef.current, controlsRef.current) : null }, key); if (group?.key === key) group.captured = true }
+    if (shouldCapture) { pushLayoutHistory(group?.key === key ? group.snapshot : copyLayout(current), key); if (group?.key === key) group.captured = true }
     return next;
   });
   const updatePerson = (id: string, patch: Partial<Person>) => setLayout(current => ({ ...current, people: current.people.map(p => p.id === id ? clampPerson(cleanPerson({ ...p, ...patch }, p)) : p) }));
@@ -230,9 +250,8 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     const requestRender = () => { if (frame) return; frame = requestAnimationFrame(() => { frame = 0; draw() }) }; renderRef.current = requestRender;
     const flashSelection = (duration = 900) => { markerVisibleRef.current = true; if (markerTimerRef.current) clearTimeout(markerTimerRef.current); requestRender(); if (duration > 0) markerTimerRef.current = window.setTimeout(() => { if (!dragRef.current) { markerVisibleRef.current = false; requestRender() } }, duration) }; flashSelectionRef.current = flashSelection;
     const emitCamera = () => { requestRender(); if (!applyingSyncRef.current) onCameraChangeRef.current?.(syncId, currentPose(camera, controls)) };
-    const beginCamera = () => { if (!dragRef.current) beginLayoutInteraction() };
-    const remember = () => { if (!dragRef.current) { endLayoutInteraction(true); writeCamera(cameraKeyRef.current, camera, controls); setPreset("自由視角") } };
-    controls.addEventListener("start", beginCamera); controls.addEventListener("change", emitCamera); controls.addEventListener("end", remember);
+    const remember = () => { if (!dragRef.current) { writeCamera(cameraKeyRef.current, camera, controls); setPreset("自由視角") } };
+    controls.addEventListener("change", emitCamera); controls.addEventListener("end", remember);
     scene.add(new THREE.HemisphereLight(0x9cb5ca, 0x19120f, 1.1)); const key = new THREE.SpotLight(0xffe4c5, 760, 52, Math.PI / 4.5, .42, 1.4); key.position.set(-5, 15, -5); key.target.position.set(0, 0, 7); key.castShadow = true; key.shadow.mapSize.set(1024, 1024); scene.add(key, key.target); const fill = new THREE.DirectionalLight(0x8aa9d7, 1.6); fill.position.set(7, 9, -8); scene.add(fill);
     const black = lit(0x090909, .92), curtain = lit(0x050505, 1), floor = lit(0x3b3936, .88), apron = lit(0x3c241b, .9), frameMat = lit(0xaaa5ba, .35, .2), line = lit(0xc8c3ba, .82); personMatRef.current = lit(0x747678, .72, .05); markerMatRef.current = new THREE.MeshBasicMaterial({ color: 0xff754c, transparent: true, opacity: .82, toneMapped: false, depthWrite: false }); backdropMatsRef.current = { panel: unlit(0x765548), frame: unlit(0x2b2927) };
     box(scene, [27, .24, STAGE.depth], [0, -.12, STAGE.depth / 2], floor);
@@ -284,7 +303,7 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     renderer.domElement.addEventListener("pointerdown", focusCanvas);
     renderer.domElement.addEventListener("pointerdown", down, true); renderer.domElement.addEventListener("pointermove", move, true); renderer.domElement.addEventListener("pointerup", up, true); renderer.domElement.addEventListener("pointercancel", up, true);
     const ro = new ResizeObserver(() => { const s = fit169(Math.max(1, mount.clientWidth), Math.max(1, mount.clientHeight)); renderer.setPixelRatio(renderPixelRatio(s.width, s.height, compact)); renderer.setSize(s.width, s.height, false); camera.aspect = 16 / 9; camera.updateProjectionMatrix(); requestRender() }); ro.observe(mount); requestRender();
-    return () => { cancelAnimationFrame(frame); if (markerTimerRef.current) clearTimeout(markerTimerRef.current); ro.disconnect(); renderer.domElement.removeEventListener("pointerdown", focusCanvas); controls.removeEventListener("start", beginCamera); controls.removeEventListener("change", emitCamera); controls.removeEventListener("end", remember); controls.dispose(); renderRef.current = () => {}; flashSelectionRef.current = () => {}; visibleMarkersRef.current = []; textureRef.current?.dispose(); scene.traverse(o => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose()) } }); renderer.dispose(); renderer.domElement.remove(); rendererRef.current = cameraRef.current = controlsRef.current = sceneRef.current = screenMatRef.current = personMatRef.current = markerMatRef.current = backdropMatsRef.current = null; peopleRef.current.clear(); backdropRef.current = null };
+    return () => { cancelAnimationFrame(frame); if (markerTimerRef.current) clearTimeout(markerTimerRef.current); ro.disconnect(); renderer.domElement.removeEventListener("pointerdown", focusCanvas); controls.removeEventListener("change", emitCamera); controls.removeEventListener("end", remember); controls.dispose(); renderRef.current = () => {}; flashSelectionRef.current = () => {}; visibleMarkersRef.current = []; textureRef.current?.dispose(); scene.traverse(o => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose()) } }); renderer.dispose(); renderer.domElement.remove(); rendererRef.current = cameraRef.current = controlsRef.current = sceneRef.current = screenMatRef.current = personMatRef.current = markerMatRef.current = backdropMatsRef.current = null; peopleRef.current.clear(); backdropRef.current = null };
   }, []);
 
   useEffect(() => {
@@ -309,17 +328,15 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
   const applyLayoutHistory = (direction: "undo" | "redo") => {
     const history = getLayoutHistory(), source = direction === "undo" ? history.past : history.future, target = source.pop();
     if (!target) return;
-    const destination = direction === "undo" ? history.future : history.past; destination.push(currentStageSnapshot()); if (destination.length > MAX_LAYOUT_HISTORY) destination.shift(); layoutHistoryGroupRef.current = null; rawSetLayout(copyLayout(target.layout));
-    const camera = cameraRef.current, controls = controlsRef.current; if (target.camera && camera && controls) { applyingSyncRef.current = true; applyPose(camera, controls, target.camera); writeCamera(cameraKeyRef.current, camera, controls); renderRef.current(); requestAnimationFrame(() => { applyingSyncRef.current = false }); setPreset("自由視角") }
-    showNotice(direction === "undo" ? "已復原這張圖片的上一個 3D 調整。" : "已重做這張圖片的下一個 3D 調整。");
+    const destination = direction === "undo" ? history.future : history.past; destination.push(copyLayout(layoutRef.current)); if (destination.length > MAX_LAYOUT_HISTORY) destination.shift(); layoutHistoryGroupRef.current = null; rawSetLayout(copyLayout(target));
+    showNotice(direction === "undo" ? "已復原這張圖片的上一個 3D 物件調整。" : "已重做這張圖片的下一個 3D 物件調整。");
   };
   useEffect(() => {
+    if (!showObjectControls) return;
     const key = (e: KeyboardEvent) => {
-      if (!showObjectControls && document.activeElement !== rendererRef.current?.domElement) return;
       if ((e.target as HTMLElement | null)?.closest("input,textarea,select,button,[contenteditable='true']")) return;
       const historyKey = e.key.toLowerCase(), historyShortcut = (e.ctrlKey || e.metaKey) && !e.altKey && (historyKey === "z" || historyKey === "y");
       if (historyShortcut) { e.preventDefault(); applyLayoutHistory(e.shiftKey || historyKey === "y" ? "redo" : "undo"); return }
-      if (!showObjectControls) return;
       const selected = selectionRef.current;
       if ((e.key === "Delete" || e.key === "Backspace") && selected.kind === "person" && !e.ctrlKey && !e.metaKey && !e.altKey) {
         const ids = selectedPersonIdsRef.current.length ? selectedPersonIdsRef.current : [selected.id], deleted = new Set(ids), remaining = layoutRef.current.people.filter(person => !deleted.has(person.id));
@@ -356,13 +373,39 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     return () => cancelAnimationFrame(release);
   }, [image?.id]);
   useEffect(() => {
+    const mat = screenMatRef.current;
+    if (!mat || image?.mediaType !== "video" || !showObjectControls) return;
+    const video = document.createElement("video"), canvas = document.createElement("canvas"), context = canvas.getContext("2d");
+    if (!context) return;
+    canvas.width = 1920; canvas.height = 1080; video.preload = "auto"; video.playsInline = true; video.src = image.url; videoRef.current = video; videoSavedTimeRef.current = image.playbackTime; let disposed = false, lastDraw = 0;
+    const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace; texture.anisotropy = 4; textureRef.current?.dispose(); textureRef.current = texture; mat.color.set(0xffffff); mat.map = texture; mat.needsUpdate = true;
+    const draw = () => { const current = imageRef.current; if (!current || current.mediaType !== "video" || video.readyState < 2) return; drawVideoProjection(context, canvas, current, video); texture.needsUpdate = true; renderRef.current() };
+    drawVideoRef.current = draw;
+    const persist = async () => { if (video.readyState < 2) return; const time = Number.isFinite(video.currentTime) ? video.currentTime : 0; if (Math.abs(time - videoSavedTimeRef.current) < .02) return; videoSavedTimeRef.current = time; try { onVideoFrameRef.current?.(time, await captureVideoPoster(video)) } catch { /* keep previous frame */ } };
+    const tick = (time: number) => { if (disposed || video.paused) return; if (time - lastDraw >= 30) { lastDraw = time; draw() } videoFrameRef.current = requestAnimationFrame(tick) };
+    video.onloadedmetadata = () => { video.currentTime = Math.min(Math.max(0, image.playbackTime), Math.max(0, video.duration - .04)) };
+    video.onloadeddata = draw; video.onseeked = draw;
+    video.onplay = () => { setVideoPlaying(true); cancelAnimationFrame(videoFrameRef.current); videoFrameRef.current = requestAnimationFrame(tick) };
+    video.onpause = () => { setVideoPlaying(false); cancelAnimationFrame(videoFrameRef.current); draw(); void persist() };
+    video.onended = () => { setVideoPlaying(false); draw(); void persist() };
+    video.onerror = () => { setVideoPlaying(false); onVideoErrorRef.current?.() };
+    video.load(); renderRef.current();
+    return () => { disposed = true; cancelAnimationFrame(videoFrameRef.current); drawVideoRef.current = () => {}; video.pause(); void persist(); video.removeAttribute("src"); video.load(); if (videoRef.current === video) videoRef.current = null; setVideoPlaying(false) };
+  }, [image?.id, image?.mediaType, showObjectControls]);
+  useEffect(() => {
+    if (image?.mediaType === "video" && showObjectControls) { drawVideoRef.current(); return }
     const mat = screenMatRef.current; if (!mat) return; let cancelled = false;
     if (!image) { textureRef.current?.dispose(); textureRef.current = null; mat.map = null; mat.color.set(0x25282d); mat.needsUpdate = true; renderRef.current(); return }
-    void projectionTexture(image).then(texture => { if (cancelled) return texture.dispose(); textureRef.current?.dispose(); textureRef.current = texture; mat.color.set(0xffffff); mat.map = texture; mat.needsUpdate = true; renderRef.current() }).catch(() => setError("目前選取的圖片無法放入 3D 投影面。")); return () => { cancelled = true };
-  }, [image]);
+    void projectionTexture(image).then(texture => { if (cancelled) return texture.dispose(); textureRef.current?.dispose(); textureRef.current = texture; mat.color.set(0xffffff); mat.map = texture; mat.needsUpdate = true; renderRef.current() }).catch(() => { setError("目前選取的素材無法放入 3D 投影面。"); onVideoErrorRef.current?.() }); return () => { cancelled = true };
+  }, [image, showObjectControls]);
+  useEffect(() => {
+    const video = videoRef.current;
+    if (image?.mediaType !== "video" || !showObjectControls || !video || !video.paused || video.readyState < 1 || Math.abs(video.currentTime - image.playbackTime) < .05) return;
+    videoSavedTimeRef.current = image.playbackTime; video.currentTime = Math.min(Math.max(0, image.playbackTime), Math.max(0, video.duration - .04));
+  }, [image?.playbackTime, image?.mediaType, showObjectControls]);
 
-  const moveCamera = (name: PresetName) => { const camera = cameraRef.current, controls = controlsRef.current; if (!camera || !controls) return; const poses: Record<Exclude<PresetName, "自由視角">, CameraPose> = { 前排: { fov: 48, position: [0, .78, -5.2], target: [0, 3.8, 8] }, 左側: { fov: 38, position: [-11.5, 2.8, -13.5], target: [0, 3.8, 7.2] }, 右側: { fov: 38, position: [11.5, 2.8, -13.5], target: [0, 3.8, 7.2] }, 俯視: { fov: 42, position: [0, 27, -2], target: [0, 0, 7.2] } }; beginLayoutInteraction(); applyPose(camera, controls, name === "自由視角" ? readCamera(cameraKeyRef.current) ?? TEMPLATE_CAMERA : poses[name]); endLayoutInteraction(true); writeCamera(cameraKeyRef.current, camera, controls); setPreset(name) };
-  const resetCamera = () => { const camera = cameraRef.current, controls = controlsRef.current; if (!camera || !controls) return; beginLayoutInteraction(); try { localStorage.removeItem(cameraKeyRef.current) } catch { /* optional */ } applyPose(camera, controls, TEMPLATE_CAMERA); endLayoutInteraction(true); writeCamera(cameraKeyRef.current, camera, controls); setPreset("自由視角") };
+  const moveCamera = (name: PresetName) => { const camera = cameraRef.current, controls = controlsRef.current; if (!camera || !controls) return; const poses: Record<Exclude<PresetName, "自由視角">, CameraPose> = { 前排: { fov: 48, position: [0, .78, -5.2], target: [0, 3.8, 8] }, 左側: { fov: 38, position: [-11.5, 2.8, -13.5], target: [0, 3.8, 7.2] }, 右側: { fov: 38, position: [11.5, 2.8, -13.5], target: [0, 3.8, 7.2] }, 俯視: { fov: 42, position: [0, 27, -2], target: [0, 0, 7.2] } }; applyPose(camera, controls, name === "自由視角" ? readCamera(cameraKeyRef.current) ?? TEMPLATE_CAMERA : poses[name]); setPreset(name) };
+  const resetCamera = () => { const camera = cameraRef.current, controls = controlsRef.current; if (!camera || !controls) return; try { localStorage.removeItem(cameraKeyRef.current) } catch { /* optional */ } applyPose(camera, controls, TEMPLATE_CAMERA); writeCamera(cameraKeyRef.current, camera, controls); setPreset("自由視角") };
   const captureView = () => { const renderer = rendererRef.current, scene = sceneRef.current, camera = cameraRef.current; if (!renderer || !scene || !camera) return null; renderer.render(scene, camera); return renderer.domElement.toDataURL("image/png") };
   const getCameraPose = () => cameraRef.current && controlsRef.current ? currentPose(cameraRef.current, controlsRef.current) : null;
   const exportView = () => { const data = captureView(); if (!data) return; const a = document.createElement("a"); a.download = `${image?.name || "舞台"}-3D視角.png`; a.href = data; a.click() };
@@ -404,6 +447,7 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     {error && <div className="stage3d-error">{error}</div>}{notice && <div className="stage3d-notice" role="status">{notice}</div>}
     {!compact && <div className="stage3d-badges"><span>鏡框 15.42 × 8.50 m</span><span>天幕深度 10.65 m</span><span>投影 13.20 × 7.43 m・16:9</span></div>}
     <div className="stage3d-presets">{(["自由視角", "前排", "左側", "右側", "俯視"] as PresetName[]).map(name => <button key={name} className={preset === name ? "active" : ""} onClick={() => moveCamera(name)}>{name}</button>)}<button className="reset-view" onClick={resetCamera}>重設自由視角</button></div>
+    {image?.mediaType === "video" && showObjectControls && <div className={`stage3d-video-controls ${controlsCollapsed ? "" : "controls-open"}`}><button disabled={videoPlaying} onClick={() => { const video = videoRef.current; if (video) void video.play().catch(() => onVideoErrorRef.current?.()) }}>▶ 播放</button><button disabled={!videoPlaying} onClick={() => videoRef.current?.pause()}>Ⅱ 暫停</button><span>{videoPlaying ? "影片播放中" : "影片已暫停"}</span></div>}
     {showObjectControls && controlsCollapsed && <button className="stage3d-panel-open" onClick={() => setControlsCollapsed(false)}>‹ 展開物件控制</button>}
     {showObjectControls && !controlsCollapsed && <div className="stage3d-objects" aria-label="3D 物件調整" onPointerDownCapture={event => { if ((event.target as HTMLElement).matches("input[type='range'],input[type='number'],input[type='color']")) beginLayoutInteraction() }} onPointerUpCapture={() => endLayoutInteraction()} onPointerCancelCapture={() => endLayoutInteraction()} onBlurCapture={() => endLayoutInteraction()}>
       <div className="stage3d-objects-title"><div><strong>物件調整</strong><span>人物與背板分區控制</span></div><button onClick={() => setControlsCollapsed(true)}>收合 ›</button></div>

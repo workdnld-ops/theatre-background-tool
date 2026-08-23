@@ -7,6 +7,7 @@ import Stage3D, { type CameraPose, type Stage3DHandle } from "./Stage3D";
 type ViewMode = "single" | "compare" | "threeD";
 type ComparePreviewMode = "flat" | "threeD";
 type CompareCameraMode = "sync" | "individual";
+type MediaType = "image" | "video";
 type FitMode = "width" | "height";
 type Transform = {
   scale: number;
@@ -28,8 +29,12 @@ type StoredImage = {
   updatedAt: number;
   transform: Transform;
   categoryId: string | null;
+  mediaType: MediaType;
+  posterBlob?: Blob;
+  playbackTime: number;
+  duration?: number;
 };
-type LibraryImage = StoredImage & { url: string };
+type LibraryImage = StoredImage & { url: string; posterUrl?: string };
 type Category = { id: string; name: string; createdAt: number };
 type TransformHistory = { past: Transform[]; future: Transform[] };
 type OfflineState = "preparing" | "ready" | "offline" | "disabled";
@@ -149,8 +154,12 @@ async function removeCategoryAndImages(categoryId: string) {
 }
 
 function withoutUrl(image: LibraryImage): StoredImage {
-  const { url: _url, ...stored } = image;
+  const { url: _url, posterUrl: _posterUrl, ...stored } = image;
   return stored;
+}
+
+function mediaPreviewUrl(image: LibraryImage) {
+  return image.mediaType === "video" ? image.posterUrl ?? "" : image.url;
 }
 
 function loadHtmlImage(src: string) {
@@ -159,6 +168,32 @@ function loadHtmlImage(src: string) {
     image.onload = () => resolve(image);
     image.onerror = reject;
     image.src = src;
+  });
+}
+
+function captureVideoPoster(video: HTMLVideoElement) {
+  return new Promise<Blob>((resolve, reject) => {
+    if (!video.videoWidth || !video.videoHeight) return reject(new Error("video frame is unavailable"));
+    const scale = Math.min(1, 1920 / video.videoWidth, 1080 / video.videoHeight), canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale)); canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    const context = canvas.getContext("2d"); if (!context) return reject(new Error("canvas is unavailable"));
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("poster capture failed")), "image/jpeg", .9);
+  });
+}
+
+function inspectVideoFile(file: File) {
+  return new Promise<{ posterBlob: Blob; duration: number }>((resolve, reject) => {
+    const url = URL.createObjectURL(file), video = document.createElement("video"); let settled = false;
+    const finish = () => { video.removeAttribute("src"); video.load(); URL.revokeObjectURL(url) };
+    const fail = () => { if (settled) return; settled = true; finish(); reject(new Error("unsupported video")) };
+    video.preload = "auto"; video.playsInline = true; video.src = url;
+    video.onerror = fail;
+    video.onloadeddata = () => {
+      if (settled || !Number.isFinite(video.duration) || video.duration <= 0) return fail();
+      void captureVideoPoster(video).then(posterBlob => { if (settled) return; settled = true; const duration = video.duration; finish(); resolve({ posterBlob, duration }) }).catch(fail);
+    };
+    video.load();
   });
 }
 
@@ -202,7 +237,7 @@ function drawProjectedImage(
   const height = background.naturalHeight * scale;
   const imageX = frameX + (frameWidth - width) / 2 + (image.transform.x / 100) * referenceWidth;
   const imageY = frameY + (frameHeight - height) / 2 + (image.transform.y / 100) * referenceHeight;
-  context.filter = pictureFilter(image.transform);
+  context.filter = image.mediaType === "image" ? pictureFilter(image.transform) : "none";
   context.drawImage(background, imageX, imageY, width, height);
   context.filter = "none";
 }
@@ -241,6 +276,8 @@ function StageCanvas({
   onTransform,
   onInteractionStart,
   onInteractionEnd,
+  onVideoFrame,
+  onVideoError,
 }: {
   image: LibraryImage;
   interactive?: boolean;
@@ -250,12 +287,37 @@ function StageCanvas({
   onTransform?: (transform: Transform) => void;
   onInteractionStart?: () => void;
   onInteractionEnd?: () => void;
+  onVideoFrame?: (time: number, posterBlob: Blob) => void;
+  onVideoError?: () => void;
 }) {
   const canvasRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const [fittedSize, setFittedSize] = useState<{ width: number; height: number } | null>(null);
+  const [videoPlaying, setVideoPlaying] = useState(false);
   const lastPointer = useRef<{ x: number; y: number; startX: number; startY: number; axis: "x" | "y" | null } | null>(null);
+  const savedVideoTimeRef = useRef(image.playbackTime);
   const transformRef = useRef(image.transform);
   transformRef.current = image.transform;
+
+  async function persistVideoFrame(video: HTMLVideoElement) {
+    if (image.mediaType !== "video" || video.readyState < 2) return;
+    const time = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+    if (Math.abs(savedVideoTimeRef.current - time) < .02) return;
+    savedVideoTimeRef.current = time;
+    try { onVideoFrame?.(time, await captureVideoPoster(video)) } catch { /* keep the previous poster */ }
+  }
+
+  useLayoutEffect(() => {
+    savedVideoTimeRef.current = image.playbackTime;
+    if (image.mediaType !== "video" || !interactive) return;
+    return () => { const video = videoRef.current; if (video) { video.pause(); void persistVideoFrame(video) } };
+  }, [image.id, interactive]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (image.mediaType !== "video" || !video || !video.paused || video.readyState < 1 || Math.abs(video.currentTime - image.playbackTime) < .05) return;
+    savedVideoTimeRef.current = image.playbackTime; video.currentTime = Math.min(Math.max(0, image.playbackTime), Math.max(0, video.duration - .04));
+  }, [image.playbackTime, image.mediaType]);
 
   useLayoutEffect(() => {
     if (!fitContainer) return;
@@ -328,19 +390,37 @@ function StageCanvas({
           transform: `translate3d(${image.transform.x / PROJECTION_FRAME.width}%, ${image.transform.y / PROJECTION_FRAME.height}%, 0)`,
         }}
       >
-        <img
+        {image.mediaType === "video" && interactive ? <video
+          ref={videoRef}
           className={`background-image fit-${image.transform.fit}`}
           src={image.url}
+          aria-label={image.name}
+          playsInline
+          preload="auto"
+          style={{ transform: `translate(-50%, -50%) scale(${image.transform.scale / 100})` }}
+          onLoadedMetadata={event => { const video = event.currentTarget, end = Math.max(0, video.duration - .04); video.currentTime = Math.min(Math.max(0, image.playbackTime), end) }}
+          onPlay={() => setVideoPlaying(true)}
+          onPause={event => { setVideoPlaying(false); void persistVideoFrame(event.currentTarget) }}
+          onEnded={event => { setVideoPlaying(false); void persistVideoFrame(event.currentTarget) }}
+          onError={onVideoError}
+        /> : <img
+          className={`background-image fit-${image.transform.fit}`}
+          src={mediaPreviewUrl(image)}
           alt={image.name}
           draggable={false}
           style={{
-            filter: pictureFilter(image.transform),
+            filter: image.mediaType === "image" ? pictureFilter(image.transform) : "none",
             transform: `translate(-50%, -50%) scale(${image.transform.scale / 100})`,
           }}
-        />
+        />}
       </div>
       <img className="stage-overlay" src={STAGE_OVERLAY_URL} alt="劇場舞台比例模擬框" draggable={false} />
       {label && <span className="compare-label">{label}</span>}
+      {interactive && image.mediaType === "video" && <div className="video-playback-controls" onPointerDown={event => event.stopPropagation()}>
+        <button disabled={videoPlaying} onClick={() => { const video = videoRef.current; if (video) void video.play().catch(() => onVideoError?.()) }}>▶ 播放</button>
+        <button disabled={!videoPlaying} onClick={() => videoRef.current?.pause()}>Ⅱ 暫停</button>
+        <span>{videoPlaying ? "播放中" : "已暫停"}</span>
+      </div>}
     </div>
   );
 }
@@ -443,7 +523,9 @@ export default function Home() {
           .map((record) => {
             const url = URL.createObjectURL(record.blob);
             urlsRef.current.push(url);
-            return { ...record, note: record.note ?? "", categoryId: record.categoryId ?? null, transform: normalizeTransform(record.transform), url };
+            const mediaType: MediaType = record.mediaType === "video" ? "video" : "image", posterUrl = mediaType === "video" && record.posterBlob ? URL.createObjectURL(record.posterBlob) : undefined;
+            if (posterUrl) urlsRef.current.push(posterUrl);
+            return { ...record, mediaType, playbackTime: Number.isFinite(record.playbackTime) ? record.playbackTime : 0, note: record.note ?? "", categoryId: record.categoryId ?? null, transform: normalizeTransform(record.transform), url, posterUrl };
           });
         setImages(restored);
         setCategories(storedCategories.sort((a, b) => a.createdAt - b.createdAt));
@@ -538,11 +620,16 @@ export default function Home() {
   }
 
   async function importFiles(fileList: FileList | File[], categoryId: string | null = null) {
-    const files = Array.from(fileList).filter((file) => file.type.startsWith("image/"));
-    if (!files.length) return showToast("請選擇 JPG、PNG 或 WEBP 圖片。" );
+    const files = Array.from(fileList).filter(file => file.type.startsWith("image/") || file.type === "video/mp4" || /\.mp4$/i.test(file.name));
+    if (!files.length) return showToast("請選擇 JPG、PNG、WEBP 圖片或 MP4（H.264）影片。" );
+    const videoBytes = files.filter(file => file.type === "video/mp4" || /\.mp4$/i.test(file.name)).reduce((sum, file) => sum + file.size, 0);
+    if (videoBytes > 100 * 1024 * 1024 && !window.confirm(`這次選取的影片約 ${(videoBytes / 1024 / 1024).toFixed(0)} MB，會保存在目前瀏覽器並占用本機空間。要繼續匯入嗎？`)) return;
     const added: LibraryImage[] = [];
-    try {
-      for (const file of files) {
+    let unsupportedVideos = 0, storageFailed = false;
+    for (const file of files) {
+      try {
+        const mediaType: MediaType = file.type === "video/mp4" || /\.mp4$/i.test(file.name) ? "video" : "image";
+        const videoInfo = mediaType === "video" ? await inspectVideoFile(file) : null;
         const stored: StoredImage = {
           id: crypto.randomUUID(),
           name: file.name.replace(/\.[^.]+$/, ""),
@@ -552,17 +639,22 @@ export default function Home() {
           updatedAt: Date.now(),
           transform: { ...DEFAULT_TRANSFORM },
           categoryId,
+          mediaType,
+          posterBlob: videoInfo?.posterBlob,
+          playbackTime: 0,
+          duration: videoInfo?.duration,
         };
         await saveImage(stored);
         const url = URL.createObjectURL(file);
-        urlsRef.current.push(url);
-        added.push({ ...stored, url });
+        const posterUrl = stored.posterBlob ? URL.createObjectURL(stored.posterBlob) : undefined;
+        urlsRef.current.push(url); if (posterUrl) urlsRef.current.push(posterUrl);
+        added.push({ ...stored, url, posterUrl });
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "QuotaExceededError") storageFailed = true;
+        else if (file.type === "video/mp4" || /\.mp4$/i.test(file.name)) unsupportedVideos += 1;
       }
-    } catch (error) {
-      const isQuotaError = error instanceof DOMException && error.name === "QuotaExceededError";
-      showToast(isQuotaError ? "本機儲存空間不足，請刪除部分圖片後再試。" : "圖片無法寫入本機圖庫，請稍後再試。" );
     }
-    if (!added.length) return;
+    if (!added.length) return showToast(storageFailed ? "本機儲存空間不足，請先刪除部分素材後再試。" : unsupportedVideos ? "影片無法播放，請確認檔案為瀏覽器支援的 MP4（H.264）編碼。" : "素材無法寫入本機圖庫，請稍後再試。" );
     void navigator.storage?.persist?.();
     setImages((current) => [...added, ...current]);
     setActiveId(added[0].id);
@@ -571,7 +663,7 @@ export default function Home() {
       added.forEach((image) => { if (next.length < MAX_COMPARE && !next.includes(image.id)) next.push(image.id); });
       return next;
     });
-    showToast(`已加入 ${added.length} 張背景，並儲存在本機圖庫。`);
+    showToast(`已加入 ${added.length} 個素材並儲存在本機圖庫${unsupportedVideos ? `；另有 ${unsupportedVideos} 支影片因格式或編碼不支援而略過` : ""}。`);
     refreshStorage();
   }
 
@@ -580,6 +672,17 @@ export default function Home() {
       if (image.id !== id) return image;
       const next = { ...image, ...patch, updatedAt: Date.now() };
       void saveImage(withoutUrl(next)).catch(() => showToast("變更暫時無法儲存，請確認本機空間。"));
+      return next;
+    }));
+  }
+
+  function saveVideoFrame(id: string, playbackTime: number, posterBlob: Blob) {
+    setImages(current => current.map(image => {
+      if (image.id !== id || image.mediaType !== "video") return image;
+      if (image.posterUrl) URL.revokeObjectURL(image.posterUrl);
+      const posterUrl = URL.createObjectURL(posterBlob), next = { ...image, playbackTime, posterBlob, posterUrl, updatedAt: Date.now() };
+      urlsRef.current.push(posterUrl);
+      void saveImage(withoutUrl(next)).catch(() => showToast("影片進度或封面暫時無法儲存，請確認本機空間。"));
       return next;
     }));
   }
@@ -612,13 +715,13 @@ export default function Home() {
   function undoTransform(id: string) {
     const image = images.find(item => item.id === id), history = transformHistory(id), previous = history.past.pop();
     if (!image || !previous) return;
-    history.future.push({ ...image.transform }); history.future = history.future.slice(-MAX_HISTORY); singleHistoryGroupRef.current = null; patchImage(id, { transform: previous }); showToast("已復原單張圖片的上一步調整。");
+    history.future.push({ ...image.transform }); history.future = history.future.slice(-MAX_HISTORY); singleHistoryGroupRef.current = null; patchImage(id, { transform: previous }); showToast("已復原這個素材的上一步畫面調整。");
   }
 
   function redoTransform(id: string) {
     const image = images.find(item => item.id === id), history = transformHistory(id), next = history.future.pop();
     if (!image || !next) return;
-    history.past.push({ ...image.transform }); history.past = history.past.slice(-MAX_HISTORY); singleHistoryGroupRef.current = null; patchImage(id, { transform: next }); showToast("已重做單張圖片的下一步調整。");
+    history.past.push({ ...image.transform }); history.past = history.past.slice(-MAX_HISTORY); singleHistoryGroupRef.current = null; patchImage(id, { transform: next }); showToast("已重做這個素材的下一步畫面調整。");
   }
 
   async function deleteFromLibrary(image: LibraryImage) {
@@ -629,6 +732,7 @@ export default function Home() {
       return showToast("暫時無法刪除，請重新整理後再試。" );
     }
     URL.revokeObjectURL(image.url);
+    if (image.posterUrl) URL.revokeObjectURL(image.posterUrl);
     setImages((current) => current.filter((item) => item.id !== image.id));
     setCompareIds((current) => current.filter((id) => id !== image.id));
     if (activeId === image.id) setActiveId(images.find((item) => item.id !== image.id)?.id ?? null);
@@ -655,7 +759,7 @@ export default function Home() {
 
   async function deleteCategory(category: Category) {
     const categoryImages = images.filter((image) => image.categoryId === category.id);
-    const detail = categoryImages.length ? `，並永久刪除裡面的 ${categoryImages.length} 張圖片` : "";
+    const detail = categoryImages.length ? `，並永久刪除裡面的 ${categoryImages.length} 個素材` : "";
     if (!window.confirm(`要刪除「${category.name}」分類${detail}嗎？此動作無法復原。`)) return;
     try {
       await removeCategoryAndImages(category.id);
@@ -663,26 +767,26 @@ export default function Home() {
       return showToast("分類暫時無法刪除，請重新整理後再試。");
     }
     const removedIds = new Set(categoryImages.map((image) => image.id));
-    categoryImages.forEach((image) => URL.revokeObjectURL(image.url));
+    categoryImages.forEach((image) => { URL.revokeObjectURL(image.url); if (image.posterUrl) URL.revokeObjectURL(image.posterUrl) });
     const remaining = images.filter((image) => !removedIds.has(image.id));
     setImages(remaining);
     setCategories((current) => current.filter((item) => item.id !== category.id));
     setCompareIds((current) => current.filter((id) => !removedIds.has(id)));
     setCollapsedCategories((current) => { const next = new Set(current); next.delete(category.id); return next; });
     if (activeId && removedIds.has(activeId)) setActiveId(remaining[0]?.id ?? null);
-    showToast(`已刪除分類與 ${categoryImages.length} 張圖片。`);
+    showToast(`已刪除分類與 ${categoryImages.length} 個素材。`);
     refreshStorage();
   }
 
   async function clearLibrary() {
     if (!images.length && !categories.length) return showToast("本機圖庫已經是空的。");
-    if (!window.confirm(`要清空本機圖庫嗎？將永久刪除 ${images.length} 張圖片與 ${categories.length} 個分類，此動作無法復原。`)) return;
+    if (!window.confirm(`要清空本機圖庫嗎？將永久刪除 ${images.length} 個素材與 ${categories.length} 個分類，此動作無法復原。`)) return;
     try {
       await clearStoredLibrary();
     } catch {
       return showToast("暫時無法清空圖庫，請重新整理後再試。");
     }
-    images.forEach((image) => URL.revokeObjectURL(image.url));
+    images.forEach((image) => { URL.revokeObjectURL(image.url); if (image.posterUrl) URL.revokeObjectURL(image.posterUrl) });
     setImages([]);
     setCategories([]);
     setCompareIds([]);
@@ -799,7 +903,7 @@ export default function Home() {
     const image = activeImage;
     if (!image) return;
     if (alignment === "center") return updateTransform(image.id, { ...image.transform, x: 0, y: 0 });
-    const source = await loadHtmlImage(image.url);
+    const source = await loadHtmlImage(mediaPreviewUrl(image));
     const baseScale = image.transform.fit === "height"
       ? PROJECTION_FRAME_HEIGHT / source.naturalHeight
       : PROJECTION_FRAME_WIDTH / source.naturalWidth;
@@ -830,6 +934,7 @@ export default function Home() {
   }
 
   async function exportComposite(image: LibraryImage) {
+    if (image.mediaType === "video") return showToast("影片不提供單張圖片匯出，請使用並排比較匯出靜態畫面。");
     const [background, overlay] = await Promise.all([loadHtmlImage(image.url), loadHtmlImage(STAGE_OVERLAY_URL)]);
     const canvas = document.createElement("canvas");
     canvas.width = STAGE_CANVAS_WIDTH;
@@ -845,6 +950,7 @@ export default function Home() {
   }
 
   async function exportCroppedProjection(image: LibraryImage) {
+    if (image.mediaType === "video") return showToast("影片不提供裁切圖匯出。");
     const background = await loadHtmlImage(image.url);
     const canvas = document.createElement("canvas");
     canvas.width = STAGE_CANVAS_WIDTH;
@@ -905,7 +1011,7 @@ export default function Home() {
           if (!data) throw new Error("3D comparison is not ready");
           return loadHtmlImage(data);
         }))
-        : await Promise.all(comparedImages.map((image) => loadHtmlImage(image.url)));
+        : await Promise.all(comparedImages.map((image) => loadHtmlImage(mediaPreviewUrl(image))));
     } catch {
       return showToast("3D 畫面還在準備中，請稍候再匯出。");
     }
@@ -967,7 +1073,7 @@ export default function Home() {
   }
 
   async function disableOfflineInstall() {
-    if (!window.confirm("要解除這台裝置的離線功能嗎？這不會刪除圖庫圖片；若已安裝桌面捷徑，仍需從系統或瀏覽器選單移除該捷徑。")) return;
+    if (!window.confirm("要解除這台裝置的離線功能嗎？這不會刪除圖庫素材；若已安裝桌面捷徑，仍需從系統或瀏覽器選單移除該捷徑。")) return;
     localStorage.setItem(OFFLINE_DISABLED_KEY, "1");
     try {
       const appScope = new URL(import.meta.env.BASE_URL, window.location.href).href;
@@ -1012,19 +1118,19 @@ export default function Home() {
         <div className="brand-mark">劇</div>
         <div className="brand-copy"><p className="eyebrow">STAGE VIEW</p><h1>劇場投影背景模擬器</h1></div>
         <div className="top-actions">
-          <span className="privacy-pill"><i /> 圖片只留在這台裝置</span>
+          <span className="privacy-pill"><i /> 圖片與影片只留在這台裝置</span>
           <span className={`offline-pill ${offlineState}`}><i /> {offlineLabel}</span>
           {installPrompt && offlineState !== "disabled" && <button className="install-button" onClick={() => void installApp()}>安裝到桌面</button>}
           {offlineState === "disabled"
             ? <button className="install-button" onClick={enableOfflineInstall}>重新啟用離線</button>
             : <button className="install-button danger-text" onClick={() => void disableOfflineInstall()}>解除離線</button>}
-          <button className="primary" onClick={() => inputRef.current?.click()}>＋ 新增背景</button>
+          <button className="primary" onClick={() => inputRef.current?.click()}>＋ 新增素材</button>
           <input
             ref={inputRef}
             hidden
             multiple
             type="file"
-            accept="image/jpeg,image/png,image/webp"
+            accept="image/jpeg,image/png,image/webp,video/mp4,.mp4"
             onChange={(event) => { if (event.target.files) void importFiles(event.target.files); event.target.value = ""; }}
           />
         </div>
@@ -1034,11 +1140,11 @@ export default function Home() {
         <aside className="sidebar">
           <div className="section-heading">
             <div><p className="eyebrow">LIBRARY</p><h2>我的圖庫</h2></div>
-            <span>{images.length} 張</span>
+            <span>{images.length} 個</span>
           </div>
           <label className="search-box"><span>⌕</span><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜尋名稱或備註" /></label>
           <button className="upload-card" onClick={() => inputRef.current?.click()}>
-            <span className="upload-icon">＋</span><span><strong>加入多張背景</strong><small>也可以直接拖曳進來</small></span>
+            <span className="upload-icon">＋</span><span><strong>加入圖片或影片</strong><small>支援圖片與 MP4（H.264），也可直接拖曳</small></span>
           </button>
 
           <div className="category-create">
@@ -1056,7 +1162,7 @@ export default function Home() {
           <div className="library-list">
             {!ready && <div className="empty-library">正在開啟本機圖庫…</div>}
             {ready && !filteredImages.length && (
-              <div className="empty-library">{images.length ? "沒有符合搜尋條件的圖片。" : "加入過的圖片會保留在這台裝置，下次開啟可直接繼續。"}</div>
+              <div className="empty-library">{images.length ? "沒有符合搜尋條件的素材。" : "加入過的圖片與影片會保留在這台裝置，下次開啟可直接繼續。"}</div>
             )}
             {ready && libraryGroups.map((group) => {
               const collapsed = collapsedCategories.has(group.id);
@@ -1098,7 +1204,7 @@ export default function Home() {
                           <label className="compare-check" title="加入比較" onClick={(event) => event.stopPropagation()}>
                             <input type="checkbox" checked={compareIds.includes(image.id)} onChange={() => toggleCompare(image.id)} /><span>比較</span>
                           </label>
-                          <div className="thumb"><img src={image.url} alt="" /><img src={STAGE_OVERLAY_URL} alt="" /></div>
+                          <div className="thumb"><img src={mediaPreviewUrl(image)} alt="" /><img className="thumb-overlay" src={STAGE_OVERLAY_URL} alt="" />{image.mediaType === "video" && <span className="video-badge">▶ 影片</span>}</div>
                           <div className="item-copy">
                             <strong>{image.name}</strong>
                             <InlineNoteEditor compact note={image.note} onSave={(note) => patchImage(image.id, { note })} />
@@ -1122,7 +1228,7 @@ export default function Home() {
             <div><p className="eyebrow">PREVIEW</p><h2>{viewMode === "single" ? "舞台預覽" : viewMode === "compare" ? `${comparePreviewMode === "threeD" ? "3D " : ""}比較背景（${comparedImages.length}/${MAX_COMPARE}）` : "3D 舞台預覽"}</h2></div>
             <div className="stage-toolbar-controls">
               <div className="mode-actions">
-                {viewMode === "single" && <>
+                {viewMode === "single" && activeImage?.mediaType === "image" && <>
                   <button className="export-secondary" disabled={!activeImage} onClick={() => activeImage && void exportCroppedProjection(activeImage)}>↓ 匯出裁切圖</button>
                   <button className="export-action" disabled={!activeImage} onClick={() => activeImage && void exportComposite(activeImage)}>↓ 匯出預覽</button>
                 </>}
@@ -1144,18 +1250,18 @@ export default function Home() {
             <div className={`single-view ${activeImage && !singleControlsCollapsed ? "controls-open" : ""}`}>
               <div className="canvas-wrap">
                 {activeImage ? (
-                  <StageCanvas image={activeImage} interactive fitContainer onInteractionStart={() => beginTransformInteraction(activeImage.id)} onInteractionEnd={endTransformInteraction} onTransform={(transform) => updateTransform(activeImage.id, transform)} />
+                  <StageCanvas key={activeImage.id} image={activeImage} interactive fitContainer onVideoFrame={(time, posterBlob) => saveVideoFrame(activeImage.id, time, posterBlob)} onVideoError={() => showToast("影片無法播放，請確認為瀏覽器支援的 MP4（H.264）編碼。")} onInteractionStart={() => beginTransformInteraction(activeImage.id)} onInteractionEnd={endTransformInteraction} onTransform={(transform) => updateTransform(activeImage.id, transform)} />
                 ) : (
                   <button className="empty-stage" onClick={() => inputRef.current?.click()}>
-                    <span>＋</span><strong>把背景圖放進舞台</strong><small>可一次選取多張 JPG、PNG 或 WEBP</small>
+                    <span>＋</span><strong>把背景素材放進舞台</strong><small>可選取 JPG、PNG、WEBP 或 MP4（H.264）</small>
                   </button>
                 )}
               </div>
 
-              {activeImage && singleControlsCollapsed && <button className="single-panel-open" onClick={() => setSingleControlsCollapsed(false)}>‹ 展開圖片控制</button>}
+              {activeImage && singleControlsCollapsed && <button className="single-panel-open" onClick={() => setSingleControlsCollapsed(false)}>‹ 展開素材控制</button>}
               {activeImage && !singleControlsCollapsed && (
                 <div className="editor-panel">
-                  <div className="editor-panel-title"><div><strong>圖片調整</strong><span>位置、尺寸與畫面效果</span></div><button onClick={() => setSingleControlsCollapsed(true)}>收合 ›</button></div>
+                  <div className="editor-panel-title"><div><strong>{activeImage.mediaType === "video" ? "影片調整" : "圖片調整"}</strong><span>{activeImage.mediaType === "video" ? "位置、尺寸與播放進度" : "位置、尺寸與畫面效果"}</span></div><button onClick={() => setSingleControlsCollapsed(true)}>收合 ›</button></div>
                   <section className="single-control-section">
                     <strong className="single-section-title">縮放</strong>
                     <div className="range-control scale-control"><label>縮放 <b>{activeImage.transform.scale}%</b></label><input aria-label="圖片縮放，雙擊重設為 100%" title="雙擊回到 100%" type="range" min="40" max="220" value={activeImage.transform.scale} onPointerDown={() => beginTransformInteraction(activeImage.id)} onPointerUp={endTransformInteraction} onPointerCancel={endTransformInteraction} onDoubleClick={() => updateTransform(activeImage.id, { ...activeImage.transform, scale: 100 })} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, scale: Number(e.target.value) })} /></div>
@@ -1168,7 +1274,7 @@ export default function Home() {
                     <strong className="single-section-title">填滿方式</strong>
                     <div className="fill-grid"><button className={activeImage.transform.fit === "width" ? "active" : ""} onClick={() => fillActive("width")}>左右填滿</button><button className={activeImage.transform.fit === "height" ? "active" : ""} onClick={() => fillActive("height")}>上下填滿</button></div>
                   </section>
-                  <div className={`image-adjustments ${adjustmentsCollapsed ? "collapsed" : ""}`}>
+                  {activeImage.mediaType === "image" && <div className={`image-adjustments ${adjustmentsCollapsed ? "collapsed" : ""}`}>
                     <button className="image-adjustments-toggle" aria-expanded={!adjustmentsCollapsed} onClick={() => setAdjustmentsCollapsed((current) => !current)}>
                       <span><strong>畫面調整</strong><small>亮度、對比、飽和度、色調與色溫</small></span><b>{adjustmentsCollapsed ? "展開 ▾" : "收合 ▴"}</b>
                     </button>
@@ -1180,14 +1286,14 @@ export default function Home() {
                       <div className="range-control"><label>色溫 <b>{activeImage.transform.temperature > 0 ? "+" : ""}{activeImage.transform.temperature}</b></label><input title="雙擊重設色溫" type="range" min="-100" max="100" value={activeImage.transform.temperature} onPointerDown={() => beginTransformInteraction(activeImage.id)} onPointerUp={endTransformInteraction} onPointerCancel={endTransformInteraction} onDoubleClick={() => updateTransform(activeImage.id, { ...activeImage.transform, temperature: 0 })} onChange={(e) => updateTransform(activeImage.id, { ...activeImage.transform, temperature: Number(e.target.value) })} /></div>
                       <button className="secondary adjustment-reset" onClick={resetAdjustments}>重設修圖</button>
                     </div>}
-                  </div>
+                  </div>}
                   <div className="note-row">
-                    <label htmlFor="image-category">圖片分類</label>
+                    <label htmlFor="image-category">素材分類</label>
                     <select id="image-category" value={activeImage.categoryId ?? ""} onChange={(event) => patchImage(activeImage.id, { categoryId: event.target.value || null })}>
                       <option value="">未分類</option>
                       {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
                     </select>
-                    <label>背景備註</label>
+                    <label>素材備註</label>
                     <InlineNoteEditor
                       key={`single-note-${activeImage.id}`}
                       note={activeImage.note}
@@ -1196,7 +1302,7 @@ export default function Home() {
                     />
                     <span>Shift 拖曳鎖定方向；Ctrl/Cmd＋Z 復原，Ctrl/Cmd＋Shift＋Z 重做。</span>
                   </div>
-                  <button className="secondary single-reset-all" onClick={resetActive}>重設全部圖片調整</button>
+                  <button className="secondary single-reset-all" onClick={resetActive}>重設全部{activeImage.mediaType === "video" ? "影片" : "圖片"}調整</button>
                 </div>
               )}
             </div>
@@ -1254,6 +1360,7 @@ export default function Home() {
                       <div className="compare-meta">
                         <div>
                           <strong>{image.name}</strong>
+                          {image.mediaType === "video" && <small className="compare-video-note">▶ 影片靜態畫面</small>}
                           <InlineNoteEditor compact note={image.note} onSave={(note) => patchImage(image.id, { note })} />
                         </div>
                         <button onClick={() => { setActiveId(image.id); setViewMode("single"); }}>調整</button>
@@ -1262,16 +1369,16 @@ export default function Home() {
                   ))}
                 </div>
               ) : (
-                <div className="compare-empty"><span>▦</span><h3>尚未選擇比較圖片</h3><p>勾選「比較」，或直接把左側圖片拖到這裡，最多四張。</p></div>
+                <div className="compare-empty"><span>▦</span><h3>尚未選擇比較素材</h3><p>勾選「比較」，或直接把左側素材拖到這裡，最多四個。</p></div>
               )}
             </div>
           ) : (
-            <Stage3D ref={stage3DRef} image={activeImage} />
+            <Stage3D ref={stage3DRef} image={activeImage} onVideoFrame={(time, posterBlob) => { if (activeImage) saveVideoFrame(activeImage.id, time, posterBlob) }} onVideoError={() => showToast("影片無法播放，請確認為瀏覽器支援的 MP4（H.264）編碼。")} />
           )}
         </section>
       </section>
 
-      {draggingFiles && <div className="drop-overlay"><div><span>＋</span><strong>放開以加入圖庫</strong><small>可同時加入多張背景圖片</small></div></div>}
+      {draggingFiles && <div className="drop-overlay"><div><span>＋</span><strong>放開以加入圖庫</strong><small>可加入多張圖片或 MP4 影片</small></div></div>}
       {toast && <div className="toast" role="status">{toast}</div>}
     </main>
   );
