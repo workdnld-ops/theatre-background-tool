@@ -2,24 +2,24 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
-type ProjectionImage = { url: string; name: string; note: string; transform: { scale: number; x: number; y: number; brightness: number; fit: "cover" | "contain" } };
-type PresetName = "模板視角" | "前排" | "左側" | "右側" | "俯視";
+type ProjectionImage = { id?: string; url: string; name: string; note: string; transform: { scale: number; x: number; y: number; brightness: number; fit: "cover" | "contain" } };
+type PresetName = "自由視角" | "前排" | "左側" | "右側" | "俯視";
 export type CameraPose = { fov: number; position: [number, number, number]; target: [number, number, number] };
 type Person = { id: string; x: number; z: number; rotation: number; heightCm: number; visible: boolean };
 type Backdrop = { x: number; z: number; rotation: number; count: number; widthCm: number; heightCm: number; gapCm: number; visible: boolean };
-type Layout = { version: 2; people: Person[]; backdrop: Backdrop };
+type Layout = { version: 3; people: Person[]; backdrop: Backdrop };
 type Selection = { kind: "person"; id: string } | { kind: "backdrop" };
 type Legacy = { peopleVisible?: boolean; personHeightCm?: number; backdrop252Visible?: boolean; backdrop202Visible?: boolean; backdrop158Visible?: boolean };
 
 const STAGE = { width: 27, openingWidth: 15.42, openingHeight: 8.5, apronDepth: 2.6, depth: 18.81, cycloramaDepth: 10.65 };
 const INNER = 6.6, LEG_WIDTH = STAGE.openingWidth / 2 - INNER, SCREEN_WIDTH = INNER * 2, SCREEN_HEIGHT = SCREEN_WIDTH * 9 / 16;
 const LEG_DEPTHS = [1.1, 3.05, 5, 6.95, 8.9], LINE_GAP = .92, LINE_COUNT = 12, PERSON_HEIGHT = 1.7, MAX_PEOPLE = 50, BACKDROP_DEPTH = .48;
-const CAMERA_KEY = "stage-view-template-camera-v3", OLD_KEY = "stage-view-objects-v1", LAYOUT_KEY = "stage-view-layout-v2";
+const LEGACY_CAMERA_KEY = "stage-view-template-camera-v3", CAMERA_KEY_PREFIX = "stage-view-free-camera-v1:", OLD_KEY = "stage-view-objects-v1", LAYOUT_KEY = "stage-view-layout-v2";
 const DEFAULT_PEOPLE: Person[] = [
   ["person-1", -5, 3.2, -10], ["person-2", -4.15, 5.8, 7], ["person-3", -1.25, 4.2, -5],
   ["person-4", 1.25, 4.2, 5], ["person-5", 4.15, 5.8, -7], ["person-6", 5, 3.2, 10],
 ].map(([id, x, z, rotation]) => ({ id: String(id), x: Number(x), z: Number(z), rotation: Number(rotation), heightCm: 172, visible: true }));
-const DEFAULT_BACKDROP: Backdrop = { x: 0, z: 7.36, rotation: 0, count: 1, widthCm: 122, heightCm: 252, gapCm: 20, visible: true };
+const DEFAULT_BACKDROP: Backdrop = { x: 0, z: 7.36, rotation: 0, count: 1, widthCm: 122, heightCm: 252, gapCm: 0, visible: true };
 const TEMPLATE_CAMERA: CameraPose = { fov: 20, position: [0, 1.25, -22], target: [0, 3.5, 7] };
 export type Stage3DHandle = { exportView: () => void; captureView: () => string | null; getCameraPose: () => CameraPose | null };
 type Stage3DProps = {
@@ -34,7 +34,7 @@ type Stage3DProps = {
 const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
 const round = (n: number, digits = 2) => Math.round(n * 10 ** digits) / 10 ** digits;
 const normalizeRotation = (n: number) => { let r = n % 360; if (r > 180) r -= 360; if (r < -180) r += 360; return round(r, 1) };
-const copyDefaults = (): Layout => ({ version: 2, people: DEFAULT_PEOPLE.map(p => ({ ...p })), backdrop: { ...DEFAULT_BACKDROP } });
+const copyDefaults = (): Layout => ({ version: 3, people: DEFAULT_PEOPLE.map(p => ({ ...p })), backdrop: { ...DEFAULT_BACKDROP } });
 const fit169 = (w: number, h: number) => w / Math.max(1, h) > 16 / 9 ? { width: h * 16 / 9, height: h } : { width: w, height: w * 9 / 16 };
 const validTuple = (v: unknown): v is [number, number, number] => Array.isArray(v) && v.length === 3 && v.every(n => typeof n === "number" && Number.isFinite(n));
 
@@ -68,13 +68,18 @@ function backdropFits(b: Backdrop) { const e = backdropExtent(b); return e.x <= 
 function clampBackdrop(b: Backdrop) { const e = backdropExtent(b); return { ...b, x: round(clamp(b.x, -13.5 + e.x, 13.5 - e.x)), z: round(clamp(b.z, e.z, STAGE.depth - e.z)) } }
 function clampPerson(p: Person) { const r = .32 * p.heightCm / 170; return { ...p, x: round(clamp(p.x, -13.5 + r, 13.5 - r)), z: round(clamp(p.z, r, STAGE.depth - r)) } }
 
-function readCamera(): CameraPose | null {
-  try { const v = JSON.parse(localStorage.getItem(CAMERA_KEY) || "null") as Partial<CameraPose> | null; return v && typeof v.fov === "number" && validTuple(v.position) && validTuple(v.target) ? { fov: v.fov, position: v.position, target: v.target } : null } catch { return null }
+function cameraKey(image?: ProjectionImage | null) { return `${CAMERA_KEY_PREFIX}${image?.id ?? "default"}` }
+function readCamera(key: string): CameraPose | null {
+  try {
+    const raw = localStorage.getItem(key) ?? localStorage.getItem(LEGACY_CAMERA_KEY);
+    const v = JSON.parse(raw || "null") as Partial<CameraPose> | null;
+    return v && typeof v.fov === "number" && validTuple(v.position) && validTuple(v.target) ? { fov: v.fov, position: v.position, target: v.target } : null;
+  } catch { return null }
 }
 function readLayout(): Layout {
   try {
-    const v = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "null") as Partial<Layout> | null;
-    if (v?.version === 2 && Array.isArray(v.people) && v.backdrop) {
+    const v = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "null") as { version?: number; people?: Partial<Person>[]; backdrop?: Partial<Backdrop> } | null;
+    if ((v?.version === 2 || v?.version === 3) && Array.isArray(v.people) && v.backdrop) {
       const seen = new Set<string>();
       const people = v.people.slice(0, MAX_PEOPLE).map((p, i) => {
         const fallback = DEFAULT_PEOPLE[i] ?? { ...DEFAULT_PEOPLE[0], id: `person-${i + 1}`, x: 0, z: 3.2 };
@@ -82,7 +87,9 @@ function readLayout(): Layout {
         while (seen.has(next.id)) next.id += `-${i + 1}`;
         seen.add(next.id); return next;
       });
-      return { version: 2, people, backdrop: clampBackdrop(cleanBackdrop(v.backdrop)) };
+      const backdrop = cleanBackdrop(v.backdrop);
+      if (v.version === 2 && backdrop.gapCm === 20) backdrop.gapCm = 0;
+      return { version: 3, people, backdrop: clampBackdrop(backdrop) };
     }
   } catch { /* migrate below */ }
   const next = copyDefaults();
@@ -96,8 +103,8 @@ function readLayout(): Layout {
   } catch { /* defaults */ }
   return next;
 }
-function writeCamera(camera: THREE.PerspectiveCamera, controls: OrbitControls) {
-  try { localStorage.setItem(CAMERA_KEY, JSON.stringify({ fov: camera.fov, position: camera.position.toArray(), target: controls.target.toArray() })) } catch { /* optional */ }
+function writeCamera(key: string, camera: THREE.PerspectiveCamera, controls: OrbitControls) {
+  try { localStorage.setItem(key, JSON.stringify({ fov: camera.fov, position: camera.position.toArray(), target: controls.target.toArray() })) } catch { /* optional */ }
 }
 function applyPose(camera: THREE.PerspectiveCamera, controls: OrbitControls, pose: CameraPose) {
   camera.fov = pose.fov; camera.position.set(...pose.position); controls.target.set(...pose.target); camera.updateProjectionMatrix(); controls.update();
@@ -145,9 +152,9 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
   const sceneRef = useRef<THREE.Scene | null>(null), screenMatRef = useRef<THREE.MeshBasicMaterial | null>(null), textureRef = useRef<THREE.Texture | null>(null), personMatRef = useRef<THREE.Material | null>(null);
   const backdropMatsRef = useRef<{ panel: THREE.Material; frame: THREE.Material } | null>(null), peopleRef = useRef(new Map<string, THREE.Group>()), backdropRef = useRef<THREE.Group | null>(null), backdropSpecRef = useRef("");
   const boxRef = useRef<{ box: THREE.Box3; helper: THREE.Box3Helper } | null>(null), dragRef = useRef<{ selection: Selection; dx: number; dz: number } | null>(null), timerRef = useRef<number | null>(null), applyingSyncRef = useRef(false), onCameraChangeRef = useRef(onCameraChange);
-  const [preset, setPreset] = useState<PresetName>("模板視角"), [layout, setLayout] = useState<Layout>(readLayout), [selection, setSelection] = useState<Selection>({ kind: "backdrop" }), [error, setError] = useState(""), [notice, setNotice] = useState("");
+  const [preset, setPreset] = useState<PresetName>("自由視角"), [layout, setLayout] = useState<Layout>(readLayout), [selection, setSelection] = useState<Selection>({ kind: "backdrop" }), [error, setError] = useState(""), [notice, setNotice] = useState("");
   const [controlsCollapsed, setControlsCollapsed] = useState(() => localStorage.getItem("stage3d-controls-collapsed") === "1");
-  const layoutRef = useRef(layout), selectionRef = useRef(selection); layoutRef.current = layout; selectionRef.current = selection;
+  const layoutRef = useRef(layout), selectionRef = useRef(selection), cameraKeyRef = useRef(cameraKey(image)); layoutRef.current = layout; selectionRef.current = selection; cameraKeyRef.current = cameraKey(image);
   onCameraChangeRef.current = onCameraChange;
   const showNotice = (message: string) => { setNotice(message); if (timerRef.current) clearTimeout(timerRef.current); timerRef.current = window.setTimeout(() => setNotice(""), 2600) };
   const updatePerson = (id: string, patch: Partial<Person>) => setLayout(current => ({ ...current, people: current.people.map(p => p.id === id ? clampPerson(cleanPerson({ ...p, ...patch }, p)) : p) }));
@@ -164,10 +171,10 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     try { renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, powerPreference: "high-performance" }) } catch { setError("這個瀏覽器目前無法啟動 3D 畫面，請確認硬體加速已開啟。"); return }
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); const size = fit169(mount.clientWidth, mount.clientHeight); renderer.setSize(size.width, size.height, false); renderer.outputColorSpace = THREE.SRGBColorSpace; renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = .9; renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.domElement.tabIndex = 0; mount.appendChild(renderer.domElement); rendererRef.current = renderer;
     const scene = new THREE.Scene(); scene.background = new THREE.Color(0x070809); sceneRef.current = scene;
-    const pose = readCamera() ?? TEMPLATE_CAMERA, camera = new THREE.PerspectiveCamera(pose.fov, 16 / 9, .1, 180); camera.position.set(...pose.position); cameraRef.current = camera;
+    const pose = readCamera(cameraKeyRef.current) ?? TEMPLATE_CAMERA, camera = new THREE.PerspectiveCamera(pose.fov, 16 / 9, .1, 180); camera.position.set(...pose.position); cameraRef.current = camera;
     const controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true; controls.dampingFactor = .07; controls.target.set(...pose.target); controls.minDistance = 2.5; controls.maxDistance = 140; controls.maxPolarAngle = Math.PI * .92; controlsRef.current = controls;
     const emitCamera = () => { if (!applyingSyncRef.current) onCameraChangeRef.current?.(syncId, currentPose(camera, controls)) };
-    const remember = () => { if (!dragRef.current) { if (!compact) writeCamera(camera, controls); setPreset("模板視角") } };
+    const remember = () => { if (!dragRef.current) { writeCamera(cameraKeyRef.current, camera, controls); setPreset("自由視角") } };
     controls.addEventListener("change", emitCamera); controls.addEventListener("end", remember);
     scene.add(new THREE.HemisphereLight(0x9cb5ca, 0x19120f, 1.1)); const key = new THREE.SpotLight(0xffe4c5, 760, 52, Math.PI / 4.5, .42, 1.4); key.position.set(-5, 15, -5); key.target.position.set(0, 0, 7); key.castShadow = true; key.shadow.mapSize.set(1024, 1024); scene.add(key, key.target); const fill = new THREE.DirectionalLight(0x8aa9d7, 1.6); fill.position.set(7, 9, -8); scene.add(fill);
     const black = lit(0x090909, .92), curtain = lit(0x050505, 1), floor = lit(0x3b3936, .88), apron = lit(0x3c241b, .9), frameMat = lit(0xaaa5ba, .35, .2), line = lit(0xc8c3ba, .82); personMatRef.current = lit(0x747678, .72, .05); backdropMatsRef.current = { panel: unlit(0x765548), frame: unlit(0x2b2927) };
@@ -176,8 +183,8 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     for (let i = 0; i < LINE_COUNT; i++) box(scene, [27, .025, .035], [0, .02, i * LINE_GAP], line, false, false);
     box(scene, [.58, 9.5, 1.05], [-8, 4.55, -.05], black); box(scene, [.58, 9.5, 1.05], [8, 4.55, -.05], black); box(scene, [16.58, .65, 1.05], [0, 8.82, -.05], black);
     box(scene, [.22, 8.95, .2], [-7.82, 4.37, -.65], frameMat); box(scene, [.22, 8.95, .2], [7.82, 4.37, -.65], frameMat); box(scene, [15.86, .22, .2], [0, 8.73, -.65], frameMat);
-    box(scene, [27, 10.5, .28], [0, 5, STAGE.depth], black); box(scene, [.34, 10.5, STAGE.depth + 2.2], [-12.8, 5, 8.3], black); box(scene, [.34, 10.5, STAGE.depth + 2.2], [12.8, 5, 8.3], black); box(scene, [27, .25, STAGE.depth + 2.2], [0, 10.15, 8.3], black);
-    const legCenter = INNER + LEG_WIDTH / 2; LEG_DEPTHS.forEach(z => { box(scene, [LEG_WIDTH, 8.5, .13], [-legCenter, 4.25, z], curtain, true); box(scene, [LEG_WIDTH, 8.5, .13], [legCenter, 4.25, z], curtain, true); box(scene, [STAGE.openingWidth, .78, .16], [0, 8.11, z], curtain, true) });
+    box(scene, [27, 10.5, .28], [0, 5, STAGE.depth], black); box(scene, [.34, 10.5, STAGE.depth + 2.2], [-12.8, 5, 8.3], black); box(scene, [.34, 10.5, STAGE.depth + 2.2], [12.8, 5, 8.3], black);
+    const legCenter = INNER + LEG_WIDTH / 2; LEG_DEPTHS.forEach(z => { box(scene, [LEG_WIDTH, 8.5, .13], [-legCenter, 4.25, z], curtain, true); box(scene, [LEG_WIDTH, 8.5, .13], [legCenter, 4.25, z], curtain, true) });
     const screenMat = new THREE.MeshBasicMaterial({ color: 0x25282d, side: THREE.DoubleSide, toneMapped: false, fog: false }); screenMatRef.current = screenMat; const screen = new THREE.Mesh(new THREE.PlaneGeometry(SCREEN_WIDTH, SCREEN_HEIGHT), screenMat); screen.position.set(0, SCREEN_HEIGHT / 2, STAGE.cycloramaDepth); screen.rotation.y = Math.PI; scene.add(screen); box(scene, [STAGE.openingWidth, STAGE.openingHeight - SCREEN_HEIGHT, .12], [0, SCREEN_HEIGHT + (STAGE.openingHeight - SCREEN_HEIGHT) / 2, STAGE.cycloramaDepth + .04], black);
     const selectionBox = new THREE.Box3(), helper = new THREE.Box3Helper(selectionBox, 0xff6f42); helper.visible = false; helper.renderOrder = 10; scene.add(helper); boxRef.current = { box: selectionBox, helper };
     const ray = new THREE.Raycaster(), pointer = new THREE.Vector2(), plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -207,7 +214,7 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
   useEffect(() => { if (selection.kind === "person" && !layout.people.some(p => p.id === selection.id)) setSelection({ kind: "backdrop" }) }, [layout.people, selection]);
   useEffect(() => {
     if (!showObjectControls) return;
-    const key = (e: KeyboardEvent) => { if (!e.key.startsWith("Arrow") || (e.target as HTMLElement | null)?.closest("input,textarea,select,button,[contenteditable='true']")) return; const step = e.shiftKey ? .01 : .1, delta = ({ ArrowUp: [0, step], ArrowDown: [0, -step], ArrowLeft: [-step, 0], ArrowRight: [step, 0] } as Record<string, [number, number]>)[e.key]; if (!delta) return; e.preventDefault(); const s = selectionRef.current, current = layoutRef.current; if (s.kind === "backdrop") updateBackdrop({ x: current.backdrop.x + delta[0], z: current.backdrop.z + delta[1] }, false); else { const p = current.people.find(x => x.id === s.id); if (p) updatePerson(p.id, { x: p.x + delta[0], z: p.z + delta[1] }) } }; window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
+    const key = (e: KeyboardEvent) => { if (!e.key.startsWith("Arrow") || (e.target as HTMLElement | null)?.closest("input,textarea,select,button,[contenteditable='true']")) return; const step = e.shiftKey ? .01 : .1, delta = ({ ArrowUp: [0, step], ArrowDown: [0, -step], ArrowLeft: [step, 0], ArrowRight: [-step, 0] } as Record<string, [number, number]>)[e.key]; if (!delta) return; e.preventDefault(); const s = selectionRef.current, current = layoutRef.current; if (s.kind === "backdrop") updateBackdrop({ x: current.backdrop.x + delta[0], z: current.backdrop.z + delta[1] }, false); else { const p = current.people.find(x => x.id === s.id); if (p) updatePerson(p.id, { x: p.x + delta[0], z: p.z + delta[1] }) } }; window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
   }, [showObjectControls]);
   useEffect(() => {
     if (!syncCamera || syncCamera.sourceId === syncId) return;
@@ -215,17 +222,27 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     if (!camera || !controls) return;
     applyingSyncRef.current = true;
     applyPose(camera, controls, syncCamera.pose);
+    writeCamera(cameraKeyRef.current, camera, controls);
     const release = requestAnimationFrame(() => { applyingSyncRef.current = false });
     return () => cancelAnimationFrame(release);
   }, [syncCamera?.serial, syncCamera?.sourceId, syncId]);
+  useEffect(() => {
+    const camera = cameraRef.current, controls = controlsRef.current;
+    if (!camera || !controls) return;
+    applyingSyncRef.current = true;
+    applyPose(camera, controls, readCamera(cameraKey(image)) ?? TEMPLATE_CAMERA);
+    setPreset("自由視角");
+    const release = requestAnimationFrame(() => { applyingSyncRef.current = false });
+    return () => cancelAnimationFrame(release);
+  }, [image?.id]);
   useEffect(() => {
     const mat = screenMatRef.current; if (!mat) return; let cancelled = false;
     if (!image) { textureRef.current?.dispose(); textureRef.current = null; mat.map = null; mat.color.set(0x25282d); mat.needsUpdate = true; return }
     void projectionTexture(image).then(texture => { if (cancelled) return texture.dispose(); textureRef.current?.dispose(); textureRef.current = texture; mat.color.set(0xffffff); mat.map = texture; mat.needsUpdate = true }).catch(() => setError("目前選取的圖片無法放入 3D 投影面。")); return () => { cancelled = true };
   }, [image]);
 
-  const moveCamera = (name: PresetName) => { const camera = cameraRef.current, controls = controlsRef.current; if (!camera || !controls) return; const poses: Record<Exclude<PresetName, "模板視角">, CameraPose> = { 前排: { fov: 48, position: [0, .78, -5.2], target: [0, 3.8, 8] }, 左側: { fov: 38, position: [-11.5, 2.8, -13.5], target: [0, 3.8, 7.2] }, 右側: { fov: 38, position: [11.5, 2.8, -13.5], target: [0, 3.8, 7.2] }, 俯視: { fov: 42, position: [0, 27, -2], target: [0, 0, 7.2] } }; applyPose(camera, controls, name === "模板視角" ? readCamera() ?? TEMPLATE_CAMERA : poses[name]); setPreset(name) };
-  const resetCamera = () => { const camera = cameraRef.current, controls = controlsRef.current; if (!camera || !controls) return; try { localStorage.removeItem(CAMERA_KEY) } catch { /* optional */ } applyPose(camera, controls, TEMPLATE_CAMERA); setPreset("模板視角") };
+  const moveCamera = (name: PresetName) => { const camera = cameraRef.current, controls = controlsRef.current; if (!camera || !controls) return; const poses: Record<Exclude<PresetName, "自由視角">, CameraPose> = { 前排: { fov: 48, position: [0, .78, -5.2], target: [0, 3.8, 8] }, 左側: { fov: 38, position: [-11.5, 2.8, -13.5], target: [0, 3.8, 7.2] }, 右側: { fov: 38, position: [11.5, 2.8, -13.5], target: [0, 3.8, 7.2] }, 俯視: { fov: 42, position: [0, 27, -2], target: [0, 0, 7.2] } }; applyPose(camera, controls, name === "自由視角" ? readCamera(cameraKeyRef.current) ?? TEMPLATE_CAMERA : poses[name]); setPreset(name) };
+  const resetCamera = () => { const camera = cameraRef.current, controls = controlsRef.current; if (!camera || !controls) return; try { localStorage.removeItem(cameraKeyRef.current) } catch { /* optional */ } applyPose(camera, controls, TEMPLATE_CAMERA); writeCamera(cameraKeyRef.current, camera, controls); setPreset("自由視角") };
   const captureView = () => rendererRef.current?.domElement.toDataURL("image/png") ?? null;
   const getCameraPose = () => cameraRef.current && controlsRef.current ? currentPose(cameraRef.current, controlsRef.current) : null;
   const exportView = () => { const data = captureView(); if (!data) return; const a = document.createElement("a"); a.download = `${image?.name || "舞台"}-3D視角.png`; a.href = data; a.click() };
@@ -241,8 +258,8 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
   return <div className={`stage3d-shell ${compact ? "compact" : ""} ${showObjectControls && !controlsCollapsed ? "controls-open" : ""}`}>
     <div ref={mountRef} className="stage3d-canvas" aria-label="臺中市港區藝術中心 3D 舞台預覽" />
     {error && <div className="stage3d-error">{error}</div>}{notice && <div className="stage3d-notice" role="status">{notice}</div>}
-    {!compact && <div className="stage3d-badges"><span>鏡框 15.42 × 8.50 m</span><span>天幕深度 10.65 m</span><span>投影 13.20 × 7.43 m・16:9</span><span>地墊線 12 條・間距 0.92 m</span><span className="prototype">互動物件版 V5</span></div>}
-    <div className="stage3d-presets">{(["模板視角", "前排", "左側", "右側", "俯視"] as PresetName[]).map(name => <button key={name} className={preset === name ? "active" : ""} onClick={() => moveCamera(name)}>{name}</button>)}<button className="reset-view" onClick={resetCamera}>重設模板</button></div>
+    {!compact && <div className="stage3d-badges"><span>鏡框 15.42 × 8.50 m</span><span>天幕深度 10.65 m</span><span>投影 13.20 × 7.43 m・16:9</span></div>}
+    <div className="stage3d-presets">{(["自由視角", "前排", "左側", "右側", "俯視"] as PresetName[]).map(name => <button key={name} className={preset === name ? "active" : ""} onClick={() => moveCamera(name)}>{name}</button>)}<button className="reset-view" onClick={resetCamera}>重設自由視角</button></div>
     {showObjectControls && controlsCollapsed && <button className="stage3d-panel-open" onClick={() => setControlsCollapsed(false)}>‹ 展開物件控制</button>}
     {showObjectControls && !controlsCollapsed && <div className="stage3d-objects" aria-label="3D 物件調整">
       <div className="stage3d-objects-title"><div><strong>物件調整</strong><span>點選場景物件後可直接拖曳</span></div><div className="stage3d-title-actions"><button onClick={() => addPerson()}>＋ 人物</button><button onClick={() => setControlsCollapsed(true)}>收合 ›</button></div></div>
@@ -259,12 +276,12 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
         <label><span>左右 X</span><div><input type="number" step=".1" value={round(selected.x)} onChange={e => person ? updatePerson(person.id, { x: +e.target.value }) : updateBackdrop({ x: +e.target.value }, false)} /><b>m</b></div></label>
         <label><span>前後深度</span><div><input type="number" step=".1" value={round(selected.z)} onChange={e => person ? updatePerson(person.id, { z: +e.target.value }) : updateBackdrop({ z: +e.target.value }, false)} /><b>m</b></div></label>
       </div>
-      <label className="stage3d-range-field"><span>面向角度</span><input type="range" min="-180" max="180" value={selected.rotation} onChange={e => person ? updatePerson(person.id, { rotation: +e.target.value }) : updateBackdrop({ rotation: +e.target.value })} /><b>{selected.rotation}°</b></label>
+      <label className="stage3d-range-field"><span>面向角度</span><input title="雙擊重設為 0°" type="range" min="-180" max="180" value={selected.rotation} onDoubleClick={() => person ? updatePerson(person.id, { rotation: 0 }) : updateBackdrop({ rotation: 0 })} onChange={e => person ? updatePerson(person.id, { rotation: +e.target.value }) : updateBackdrop({ rotation: +e.target.value })} /><b>{selected.rotation}°</b></label>
       <div className="stage3d-quick-actions"><button onClick={() => person ? updatePerson(person.id, { rotation: 0 }) : updateBackdrop({ rotation: 0 })}>面向觀眾</button><button onClick={snapLine}>對齊最近地墊線</button><button onClick={resetSelected}>重設選取</button></div>
       {person && <div className="stage3d-person-actions"><button onClick={() => addPerson(person)} disabled={layout.people.length >= MAX_PEOPLE}>複製人物</button><button className="danger" onClick={deletePerson}>刪除人物</button></div>}
       <button className="stage3d-reset-all" onClick={resetAll}>重設全部配置</button>
     </div>}
-    {!compact && <div className="stage3d-help"><strong>{image ? image.name : "請先從左側選擇背景圖片"}</strong><span>{showObjectControls ? "點選物件後拖曳 · 方向鍵 10 cm · Shift＋方向鍵 1 cm · 空白處拖曳鏡頭" : "左鍵旋轉 · 右鍵平移 · 滾輪縮放"}</span></div>}
+    {!compact && <div className="stage3d-help"><strong>{image ? image.name : "請先從左側選擇背景圖片"}</strong><span>{showObjectControls ? "點選物件後拖曳 · 方向鍵依觀眾視角移動 10 cm · Shift＋方向鍵 1 cm" : "左鍵旋轉 · 右鍵平移 · 滾輪縮放"}</span></div>}
   </div>;
 });
 export default Stage3D;

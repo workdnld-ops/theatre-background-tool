@@ -348,7 +348,7 @@ export default function Home() {
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>("single");
   const [comparePreviewMode, setComparePreviewMode] = useState<ComparePreviewMode>("flat");
-  const [compareCameraMode, setCompareCameraMode] = useState<CompareCameraMode>("sync");
+  const [compareCameraMode, setCompareCameraMode] = useState<CompareCameraMode>("individual");
   const [compareCameraSync, setCompareCameraSync] = useState<{ sourceId: string; serial: number; pose: CameraPose } | null>(null);
   const [search, setSearch] = useState("");
   const [ready, setReady] = useState(false);
