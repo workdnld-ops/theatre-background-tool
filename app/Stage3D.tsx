@@ -39,6 +39,10 @@ const round = (n: number, digits = 2) => Math.round(n * 10 ** digits) / 10 ** di
 const normalizeRotation = (n: number) => { let r = n % 360; if (r > 180) r -= 360; if (r < -180) r += 360; return round(r, 1) };
 const copyDefaults = (): Layout => ({ version: 6, people: DEFAULT_PEOPLE.map(p => ({ ...p })), backdrop: { ...DEFAULT_BACKDROP } });
 const fit169 = (w: number, h: number) => w / Math.max(1, h) > 16 / 9 ? { width: h * 16 / 9, height: h } : { width: w, height: w * 9 / 16 };
+const renderPixelRatio = (width: number, height: number, compact: boolean) => {
+  const pixelBudget = compact ? 450_000 : 2_600_000, dprLimit = compact ? 1.25 : 1.5;
+  return Math.max(.75, Math.min(devicePixelRatio || 1, dprLimit, Math.sqrt(pixelBudget / Math.max(1, width * height))));
+};
 const validTuple = (v: unknown): v is [number, number, number] => Array.isArray(v) && v.length === 3 && v.every(n => typeof n === "number" && Number.isFinite(n));
 
 function cleanPerson(value: Partial<Person>, fallback: Person): Person {
@@ -124,9 +128,9 @@ function box(parent: THREE.Object3D, size: [number, number, number], position: [
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(...size), material); mesh.position.set(...position); mesh.castShadow = cast; mesh.receiveShadow = receive; parent.add(mesh); return mesh;
 }
 function makePerson(material: THREE.Material) {
-  const g = new THREE.Group(), body = new THREE.Mesh(new THREE.CapsuleGeometry(.2, .68, 5, 10), material), head = new THREE.Mesh(new THREE.SphereGeometry(.16, 14, 10), material);
+  const g = new THREE.Group(), body = new THREE.Mesh(new THREE.CapsuleGeometry(.2, .68, 3, 6), material), head = new THREE.Mesh(new THREE.SphereGeometry(.16, 8, 6), material);
   body.position.y = .98; head.position.y = 1.54;
-  const legGeo = new THREE.CylinderGeometry(.055, .065, .78, 8), armGeo = new THREE.CylinderGeometry(.055, .07, .68, 8);
+  const legGeo = new THREE.CylinderGeometry(.055, .065, .78, 6), armGeo = new THREE.CylinderGeometry(.055, .07, .68, 6);
   const ll = new THREE.Mesh(legGeo, material); ll.position.set(-.09, .39, 0); ll.rotation.z = -.05; const rl = ll.clone(); rl.position.x = .09; rl.rotation.z = .05;
   const la = new THREE.Mesh(armGeo, material); la.position.set(-.255, 1.04, 0); la.rotation.z = -.08; const ra = la.clone(); ra.position.x = .255; ra.rotation.z = .08;
   g.add(body, head, ll, rl, la, ra); g.traverse(o => { if (o instanceof THREE.Mesh) o.castShadow = true }); return g;
@@ -144,7 +148,7 @@ function makePanel(panelMat: THREE.Material, frameMat: THREE.Material, width: nu
     const sideGeo = new THREE.BoxGeometry(.045, height, .12), left = new THREE.Mesh(sideGeo, frameMat); left.position.set(-width / 2 + .0225, height / 2, 0); const right = left.clone(); right.position.x *= -1; g.add(left, right);
   }
   const footGeo = new THREE.BoxGeometry(Math.min(.28, width * .45), .06, BACKDROP_DEPTH), lf = new THREE.Mesh(footGeo, frameMat); lf.position.set(-width * .32, .03, .08); const rf = lf.clone(); rf.position.x *= -1;
-  const wheelGeo = new THREE.CylinderGeometry(.045, .045, .035, 10), lw = new THREE.Mesh(wheelGeo, frameMat); lw.position.set(-width * .32, .045, .18); lw.rotation.x = Math.PI / 2; const rw = lw.clone(); rw.position.x *= -1;
+  const wheelGeo = new THREE.CylinderGeometry(.045, .045, .035, 6), lw = new THREE.Mesh(wheelGeo, frameMat); lw.position.set(-width * .32, .045, .18); lw.rotation.x = Math.PI / 2; const rw = lw.clone(); rw.position.x *= -1;
   g.add(lf, rf, lw, rw); return g;
 }
 function projectionTexture(image: ProjectionImage) {
@@ -188,7 +192,7 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
   useEffect(() => {
     const mount = mountRef.current; if (!mount) return; let frame = 0, renderer: THREE.WebGLRenderer;
     try { renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, powerPreference: "high-performance" }) } catch { setError("這個瀏覽器目前無法啟動 3D 畫面，請確認硬體加速已開啟。"); return }
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); const size = fit169(mount.clientWidth, mount.clientHeight); renderer.setSize(size.width, size.height, false); renderer.outputColorSpace = THREE.SRGBColorSpace; renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = .9; renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.domElement.tabIndex = 0; mount.appendChild(renderer.domElement); rendererRef.current = renderer;
+    const size = fit169(mount.clientWidth, mount.clientHeight); renderer.setPixelRatio(renderPixelRatio(size.width, size.height, compact)); renderer.setSize(size.width, size.height, false); renderer.outputColorSpace = THREE.SRGBColorSpace; renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = .9; renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.domElement.tabIndex = 0; mount.appendChild(renderer.domElement); rendererRef.current = renderer;
     const scene = new THREE.Scene(); scene.background = new THREE.Color(0x070809); sceneRef.current = scene;
     const pose = readCamera(cameraKeyRef.current) ?? TEMPLATE_CAMERA, camera = new THREE.PerspectiveCamera(pose.fov, 16 / 9, .1, 180); camera.position.set(...pose.position); cameraRef.current = camera;
     const controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true; controls.dampingFactor = .07; controls.target.set(...pose.target); controls.minDistance = 2.5; controls.maxDistance = 140; controls.maxPolarAngle = Math.PI * .92; controlsRef.current = controls;
@@ -214,7 +218,7 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     const move = (e: PointerEvent) => { const drag = dragRef.current, point = floorPoint(e); if (!drag || !point) return; const dx = point.x - drag.lastX, dz = point.z - drag.lastZ; drag.lastX = point.x; drag.lastZ = point.z; if (drag.selection.kind === "backdrop") { drag.x += dx; drag.z += dz; updateBackdrop({ x: drag.x, z: drag.z }, false) } else movePeopleBy(drag.personIds ?? [drag.selection.id], dx, dz); e.preventDefault() };
     const up = (e: PointerEvent) => { if (!dragRef.current) return; dragRef.current = null; controls.enabled = true; if (renderer.domElement.hasPointerCapture(e.pointerId)) renderer.domElement.releasePointerCapture(e.pointerId); e.preventDefault() };
     renderer.domElement.addEventListener("pointerdown", down, true); renderer.domElement.addEventListener("pointermove", move, true); renderer.domElement.addEventListener("pointerup", up, true); renderer.domElement.addEventListener("pointercancel", up, true);
-    const ro = new ResizeObserver(() => { const s = fit169(Math.max(1, mount.clientWidth), Math.max(1, mount.clientHeight)); renderer.setSize(s.width, s.height, false); camera.aspect = 16 / 9; camera.updateProjectionMatrix() }); ro.observe(mount);
+    const ro = new ResizeObserver(() => { const s = fit169(Math.max(1, mount.clientWidth), Math.max(1, mount.clientHeight)); renderer.setPixelRatio(renderPixelRatio(s.width, s.height, compact)); renderer.setSize(s.width, s.height, false); camera.aspect = 16 / 9; camera.updateProjectionMatrix() }); ro.observe(mount);
     const animate = () => { controls.update(); const s = selectionRef.current, objects = s.kind === "backdrop" ? [backdropRef.current] : selectedPersonIdsRef.current.map(id => peopleRef.current.get(id)); const visible = objects.filter((o): o is THREE.Group => Boolean(o?.visible)); if (boxRef.current) { boxRef.current.helper.visible = showObjectControls && visible.length > 0; if (showObjectControls && visible.length) { boxRef.current.box.makeEmpty(); visible.forEach(o => boxRef.current?.box.expandByObject(o)) } } renderer.render(scene, camera); frame = requestAnimationFrame(animate) }; animate();
     return () => { cancelAnimationFrame(frame); ro.disconnect(); controls.removeEventListener("change", emitCamera); controls.removeEventListener("end", remember); controls.dispose(); textureRef.current?.dispose(); scene.traverse(o => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose()) } }); renderer.dispose(); renderer.domElement.remove(); rendererRef.current = cameraRef.current = controlsRef.current = sceneRef.current = screenMatRef.current = personMatRef.current = backdropMatsRef.current = boxRef.current = null; peopleRef.current.clear(); backdropRef.current = null };
   }, []);
