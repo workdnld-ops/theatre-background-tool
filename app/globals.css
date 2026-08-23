@@ -161,7 +161,8 @@ h3 { font-size: 18px; }
 
 .stage3d-shell { position: relative; min-height: 0; flex: 1; overflow: hidden; border-radius: 14px; background: #070809; box-shadow: inset 0 0 0 1px #ffffff12; }
 .stage3d-canvas { position: absolute; inset: 0; display: grid; place-items: center; background: #050606; }
-.stage3d-canvas canvas { display: block; max-width: 100%; max-height: 100%; box-shadow: 0 16px 45px #000b; }
+.stage3d-canvas canvas { display: block; max-width: 100%; max-height: 100%; touch-action: none; cursor: grab; box-shadow: 0 16px 45px #000b; }
+.stage3d-canvas canvas:active { cursor: grabbing; }
 .stage3d-badges { position: absolute; z-index: 2; left: 14px; top: 14px; display: flex; flex-wrap: wrap; gap: 6px; pointer-events: none; }
 .stage3d-badges span { padding: 6px 9px; border: 1px solid #ffffff1c; border-radius: 999px; background: #151719d9; color: #d9d6d1; font-size: 9px; font-weight: 800; box-shadow: 0 5px 18px #0005; backdrop-filter: blur(7px); }
 .stage3d-badges .prototype { border-color: #db7452aa; color: #ffc0a9; }
@@ -171,20 +172,40 @@ h3 { font-size: 18px; }
 .stage3d-presets button.active { background: #f1ece4; color: #25211e; }
 .stage3d-presets button.reset-view { color: #dfb6a7; }
 .stage3d-presets button.reset-view:hover { background: #a9503838; color: #ffd4c5; }
-.stage3d-objects { position: absolute; z-index: 3; right: 14px; bottom: 14px; width: 250px; padding: 10px; border: 1px solid #ffffff1c; border-radius: 11px; background: #111315e8; color: white; box-shadow: 0 5px 18px #0007; backdrop-filter: blur(9px); }
-.stage3d-objects-title { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 7px; }
+.stage3d-objects { position: absolute; z-index: 3; right: 14px; bottom: 14px; width: 306px; max-height: calc(100% - 74px); overflow-y: auto; padding: 11px; border: 1px solid #ffffff1c; border-radius: 11px; background: #111315ec; color: white; box-shadow: 0 5px 18px #0007; backdrop-filter: blur(9px); scrollbar-width: thin; }
+.stage3d-objects button, .stage3d-objects input, .stage3d-objects select { font: inherit; }
+.stage3d-objects-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.stage3d-objects-title > div { min-width: 0; display: grid; gap: 1px; }
 .stage3d-objects-title strong { font-size: 11px; }
 .stage3d-objects-title span { color: #8f918f; font-size: 8px; }
-.stage3d-object-toggles { display: grid; grid-template-columns: 1fr; gap: 4px; }
-.stage3d-object-toggles label { min-height: 25px; display: grid; grid-template-columns: 17px 1fr auto; align-items: center; gap: 5px; padding: 3px 6px; border-radius: 7px; background: #ffffff0a; color: #d2cfca; cursor: pointer; }
-.stage3d-object-toggles label:hover { background: #ffffff12; }
-.stage3d-object-toggles input { width: 13px; height: 13px; margin: 0; accent-color: var(--accent); }
-.stage3d-object-toggles span { font-size: 9px; font-weight: 800; }
-.stage3d-object-toggles b { color: #a9a6a1; font-size: 8px; }
-.stage3d-person-height { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 7px; margin-top: 7px; padding-top: 7px; border-top: 1px solid #ffffff12; color: #c9c6c1; font-size: 8px; font-weight: 800; }
-.stage3d-person-height input { min-width: 0; width: 100%; accent-color: var(--accent); }
-.stage3d-person-height b { min-width: 39px; color: #ffb69e; text-align: right; font-size: 8px; }
-.stage3d-person-height.disabled { opacity: .42; }
+.stage3d-objects-title button, .stage3d-object-picker > button { border: 1px solid #ffffff1c; border-radius: 7px; background: #ffffff0c; color: #eeeae4; padding: 6px 8px; font-size: 8px; font-weight: 900; }
+.stage3d-objects-title button:hover, .stage3d-object-picker > button:hover { background: #ffffff18; }
+.stage3d-object-picker { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 6px; padding-bottom: 8px; border-bottom: 1px solid #ffffff12; }
+.stage3d-object-picker label { display: grid; gap: 3px; color: #a9a6a1; font-size: 8px; font-weight: 800; }
+.stage3d-object-picker select { min-width: 0; width: 100%; border: 1px solid #ffffff1c; border-radius: 7px; outline: 0; background: #242628; color: #f4f1ec; padding: 6px; font-size: 9px; }
+.stage3d-object-picker > button.active { border-color: #e07854; background: #b95838; color: white; }
+.stage3d-inspector-heading { display: flex; align-items: center; justify-content: space-between; margin: 8px 0 6px; }
+.stage3d-inspector-heading strong { font-size: 10px; }
+.stage3d-inspector-heading label { display: flex; align-items: center; gap: 4px; color: #d0ccc6; font-size: 8px; font-weight: 800; }
+.stage3d-inspector-heading input { width: 13px; height: 13px; margin: 0; accent-color: var(--accent); }
+.stage3d-range-field { display: grid; grid-template-columns: 59px 1fr 46px; align-items: center; gap: 6px; min-height: 29px; color: #c9c6c1; font-size: 8px; font-weight: 800; }
+.stage3d-range-field input { min-width: 0; width: 100%; accent-color: var(--accent); }
+.stage3d-range-field b { color: #ffb69e; text-align: right; font-size: 8px; }
+.stage3d-backdrop-fields, .stage3d-position-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 7px; }
+.stage3d-backdrop-fields { margin-bottom: 6px; }
+.stage3d-backdrop-fields label, .stage3d-position-fields label { display: grid; grid-template-columns: 50px 1fr; align-items: center; gap: 4px; color: #aaa7a1; font-size: 8px; font-weight: 800; }
+.stage3d-backdrop-fields label > div, .stage3d-position-fields label > div { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 3px; }
+.stage3d-backdrop-fields input, .stage3d-position-fields input { min-width: 0; width: 100%; height: 25px; box-sizing: border-box; border: 1px solid #ffffff1c; border-radius: 6px; outline: 0; background: #242628; color: white; padding: 3px 5px; font-size: 9px; }
+.stage3d-backdrop-fields input:focus, .stage3d-position-fields input:focus { border-color: #de7957; }
+.stage3d-backdrop-fields b, .stage3d-position-fields b { color: #8f918f; font-size: 7px; }
+.stage3d-quick-actions, .stage3d-person-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 6px; }
+.stage3d-person-actions { grid-template-columns: 1fr 1fr; }
+.stage3d-quick-actions button, .stage3d-person-actions button, .stage3d-reset-all { border: 1px solid #ffffff17; border-radius: 7px; background: #ffffff0b; color: #d6d2cc; padding: 6px 4px; font-size: 7px; font-weight: 900; }
+.stage3d-quick-actions button:hover, .stage3d-person-actions button:hover, .stage3d-reset-all:hover { background: #ffffff17; color: white; }
+.stage3d-person-actions button.danger { border-color: #a9503866; color: #f1ae98; }
+.stage3d-person-actions button:disabled { opacity: .4; }
+.stage3d-reset-all { width: 100%; margin-top: 7px; color: #b3afa9; }
+.stage3d-notice { position: absolute; z-index: 6; left: 50%; top: 62px; transform: translateX(-50%); max-width: min(420px, 80%); border: 1px solid #e0785477; border-radius: 9px; background: #2b211dec; color: #ffd7c8; padding: 8px 12px; text-align: center; font-size: 9px; font-weight: 800; box-shadow: 0 8px 25px #0008; }
 .stage3d-help { position: absolute; z-index: 2; left: 14px; bottom: 14px; max-width: calc(100% - 28px); display: flex; align-items: center; gap: 10px; padding: 8px 11px; border: 1px solid #ffffff17; border-radius: 9px; background: #111315d9; color: white; box-shadow: 0 5px 18px #0005; pointer-events: none; backdrop-filter: blur(7px); }
 .stage3d-help strong { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
 .stage3d-help span { color: #9d9b97; font-size: 9px; }
@@ -241,10 +262,8 @@ h3 { font-size: 18px; }
   .stage3d-presets button { flex: 0 0 auto; }
   .stage3d-badges { top: 58px; left: 10px; }
   .stage3d-objects { left: 10px; right: 10px; bottom: 10px; width: auto; }
-  .stage3d-object-toggles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .stage3d-object-toggles label { grid-template-columns: 17px 1fr; }
-  .stage3d-object-toggles b { grid-column: 2; }
-  .stage3d-help { left: 10px; bottom: 145px; }
+  .stage3d-objects { max-height: 300px; }
+  .stage3d-help { left: 10px; bottom: 326px; }
   .stage3d-help span { display: none; }
   .note-row { grid-template-columns: 1fr; }
   .note-row label { margin-top: 2px; }
