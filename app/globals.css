@@ -194,6 +194,20 @@ h3 { font-size: 18px; }
 .stage3d-objects-title span { color: #8f918f; font-size: 12px; }
 .stage3d-objects-title button, .stage3d-object-picker > button { border: 1px solid #ffffff1c; border-radius: 7px; background: #ffffff0c; color: #eeeae4; padding: 6px 8px; font-size: 12px; font-weight: 900; }
 .stage3d-objects-title button:hover, .stage3d-object-picker > button:hover { background: #ffffff18; }
+.stage3d-control-section { margin-top: 10px; padding: 10px; border: 1px solid #ffffff17; border-radius: 10px; background: #ffffff07; transition: border-color .15s ease, background .15s ease; }
+.stage3d-control-section.active { border-color: #d86b48aa; background: #d86b480d; box-shadow: inset 3px 0 0 #d86b48; }
+.stage3d-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.stage3d-section-heading > div { min-width: 0; display: grid; gap: 2px; }
+.stage3d-section-heading strong { color: #f3efe9; font-size: 13px; }
+.stage3d-section-heading span { color: #96938e; font-size: 12px; }
+.stage3d-section-heading button { border: 1px solid #ffffff20; border-radius: 7px; background: #ffffff0e; color: #eeeae4; padding: 6px 8px; font-size: 12px; font-weight: 900; }
+.stage3d-section-heading button:hover { background: #ffffff18; }
+.stage3d-person-picker { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 8px; margin-bottom: 6px; }
+.stage3d-person-picker > label:first-child { display: grid; gap: 3px; color: #aaa7a1; font-size: 12px; font-weight: 800; }
+.stage3d-person-picker select { min-width: 0; width: 100%; height: 30px; border: 1px solid #ffffff1c; border-radius: 7px; outline: 0; background: #242628; color: #f4f1ec; padding: 4px 7px; font-size: 12px; }
+.stage3d-visible-check { display: flex; align-items: center; gap: 4px; color: #d0ccc6; font-size: 12px; font-weight: 800; white-space: nowrap; }
+.stage3d-visible-check input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
+.stage3d-empty-person { width: 100%; border: 1px dashed #ffffff2a; border-radius: 8px; background: #ffffff08; color: #d9d4cd; padding: 10px; font-size: 12px; font-weight: 900; }
 .stage3d-object-picker { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 6px; padding-bottom: 8px; border-bottom: 1px solid #ffffff12; }
 .stage3d-object-picker label { display: grid; gap: 3px; color: #a9a6a1; font-size: 12px; font-weight: 800; }
 .stage3d-object-picker select { min-width: 0; width: 100%; border: 1px solid #ffffff1c; border-radius: 7px; outline: 0; background: #242628; color: #f4f1ec; padding: 6px; font-size: 12px; }
@@ -212,7 +226,12 @@ h3 { font-size: 18px; }
 .stage3d-backdrop-fields input, .stage3d-position-fields input { min-width: 0; width: 100%; height: 25px; box-sizing: border-box; border: 1px solid #ffffff1c; border-radius: 6px; outline: 0; background: #242628; color: white; padding: 3px 5px; font-size: 12px; }
 .stage3d-backdrop-fields input:focus, .stage3d-position-fields input:focus { border-color: #de7957; }
 .stage3d-backdrop-fields b, .stage3d-position-fields b { color: #8f918f; font-size: 12px; }
+.stage3d-color-field { display: grid; grid-template-columns: 70px 1fr; align-items: center; gap: 7px; margin: 7px 0; color: #aaa7a1; font-size: 12px; font-weight: 800; }
+.stage3d-color-field > div { display: flex; align-items: center; gap: 8px; }
+.stage3d-color-field input { width: 48px; height: 30px; box-sizing: border-box; border: 1px solid #ffffff28; border-radius: 6px; background: #242628; padding: 2px; cursor: pointer; }
+.stage3d-color-field b { color: #c6c2bc; font-size: 12px; letter-spacing: .04em; }
 .stage3d-quick-actions, .stage3d-person-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 6px; }
+.stage3d-quick-actions.backdrop-actions { grid-template-columns: 1fr 1fr; }
 .stage3d-person-actions { grid-template-columns: 1fr 1fr; }
 .stage3d-quick-actions button, .stage3d-person-actions button, .stage3d-reset-all { border: 1px solid #ffffff17; border-radius: 7px; background: #ffffff0b; color: #d6d2cc; padding: 6px 4px; font-size: 12px; font-weight: 900; }
 .stage3d-quick-actions button:hover, .stage3d-person-actions button:hover, .stage3d-reset-all:hover { background: #ffffff17; color: white; }
