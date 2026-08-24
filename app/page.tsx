@@ -33,6 +33,8 @@ type StoredImage = {
   posterBlob?: Blob;
   playbackTime: number;
   duration?: number;
+  muted: boolean;
+  volume: number;
 };
 type LibraryImage = StoredImage & { url: string; posterUrl?: string };
 type Category = { id: string; name: string; createdAt: number };
@@ -162,6 +164,11 @@ function mediaPreviewUrl(image: LibraryImage) {
   return image.mediaType === "video" ? image.posterUrl ?? "" : image.url;
 }
 
+function formatMediaTime(seconds: number) {
+  const safe = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0, hours = Math.floor(safe / 3600), minutes = Math.floor(safe % 3600 / 60), remaining = safe % 60;
+  return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remaining).padStart(2, "0")}` : `${minutes}:${String(remaining).padStart(2, "0")}`;
+}
+
 function loadHtmlImage(src: string) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image();
@@ -277,6 +284,7 @@ function StageCanvas({
   onInteractionStart,
   onInteractionEnd,
   onVideoFrame,
+  onVideoSettings,
   onVideoError,
 }: {
   image: LibraryImage;
@@ -288,12 +296,17 @@ function StageCanvas({
   onInteractionStart?: () => void;
   onInteractionEnd?: () => void;
   onVideoFrame?: (time: number, posterBlob: Blob) => void;
+  onVideoSettings?: (settings: { muted: boolean; volume: number }) => void;
   onVideoError?: () => void;
 }) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [fittedSize, setFittedSize] = useState<{ width: number; height: number } | null>(null);
   const [videoPlaying, setVideoPlaying] = useState(false);
+  const [videoTime, setVideoTime] = useState(image.playbackTime);
+  const [videoDuration, setVideoDuration] = useState(image.duration ?? 0);
+  const [videoVolume, setVideoVolume] = useState(image.volume);
+  const videoScrubbingRef = useRef(false);
   const lastPointer = useRef<{ x: number; y: number; startX: number; startY: number; axis: "x" | "y" | null } | null>(null);
   const savedVideoTimeRef = useRef(image.playbackTime);
   const transformRef = useRef(image.transform);
@@ -316,8 +329,20 @@ function StageCanvas({
   useEffect(() => {
     const video = videoRef.current;
     if (image.mediaType !== "video" || !video || !video.paused || video.readyState < 1 || Math.abs(video.currentTime - image.playbackTime) < .05) return;
-    savedVideoTimeRef.current = image.playbackTime; video.currentTime = Math.min(Math.max(0, image.playbackTime), Math.max(0, video.duration - .04));
+    savedVideoTimeRef.current = image.playbackTime; setVideoTime(image.playbackTime); video.currentTime = Math.min(Math.max(0, image.playbackTime), Math.max(0, video.duration - .04));
   }, [image.playbackTime, image.mediaType]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || image.mediaType !== "video") return;
+    setVideoVolume(image.volume); video.muted = image.muted; video.volume = Math.min(1, Math.max(0, image.volume));
+  }, [image.muted, image.volume, image.mediaType]);
+
+  function commitVideoSeek() {
+    videoScrubbingRef.current = false;
+    const video = videoRef.current;
+    if (video && !video.seeking) void persistVideoFrame(video);
+  }
 
   useLayoutEffect(() => {
     if (!fitContainer) return;
@@ -398,7 +423,9 @@ function StageCanvas({
           playsInline
           preload="auto"
           style={{ transform: `translate(-50%, -50%) scale(${image.transform.scale / 100})` }}
-          onLoadedMetadata={event => { const video = event.currentTarget, end = Math.max(0, video.duration - .04); video.currentTime = Math.min(Math.max(0, image.playbackTime), end) }}
+          onLoadedMetadata={event => { const video = event.currentTarget, end = Math.max(0, video.duration - .04); video.muted = image.muted; video.volume = Math.min(1, Math.max(0, image.volume)); setVideoDuration(video.duration); setVideoTime(Math.min(Math.max(0, image.playbackTime), end)); video.currentTime = Math.min(Math.max(0, image.playbackTime), end) }}
+          onTimeUpdate={event => setVideoTime(event.currentTarget.currentTime)}
+          onSeeked={event => { setVideoTime(event.currentTarget.currentTime); if (event.currentTarget.paused && !videoScrubbingRef.current) void persistVideoFrame(event.currentTarget) }}
           onPlay={() => setVideoPlaying(true)}
           onPause={event => { setVideoPlaying(false); void persistVideoFrame(event.currentTarget) }}
           onEnded={event => { setVideoPlaying(false); void persistVideoFrame(event.currentTarget) }}
@@ -417,9 +444,11 @@ function StageCanvas({
       <img className="stage-overlay" src={STAGE_OVERLAY_URL} alt="劇場舞台比例模擬框" draggable={false} />
       {label && <span className="compare-label">{label}</span>}
       {interactive && image.mediaType === "video" && <div className="video-playback-controls" onPointerDown={event => event.stopPropagation()}>
-        <button disabled={videoPlaying} onClick={() => { const video = videoRef.current; if (video) void video.play().catch(() => onVideoError?.()) }}>▶ 播放</button>
-        <button disabled={!videoPlaying} onClick={() => videoRef.current?.pause()}>Ⅱ 暫停</button>
-        <span>{videoPlaying ? "播放中" : "已暫停"}</span>
+        <div className="video-primary-actions"><button disabled={videoPlaying} onClick={() => { const video = videoRef.current; if (video) void video.play().catch(() => onVideoError?.()) }}>▶ 播放</button><button disabled={!videoPlaying} onClick={() => videoRef.current?.pause()}>Ⅱ 暫停</button></div>
+        <span className="video-time-label">{formatMediaTime(videoTime)}／{formatMediaTime(videoDuration)}</span>
+        <input className="video-timeline" aria-label="影片時間軸" type="range" min="0" max={Math.max(.01, videoDuration)} step=".01" value={Math.min(videoTime, Math.max(.01, videoDuration))} onPointerDown={() => { videoScrubbingRef.current = true }} onKeyDown={() => { videoScrubbingRef.current = true }} onChange={event => { const video = videoRef.current, time = Number(event.target.value); setVideoTime(time); if (video) video.currentTime = time }} onPointerUp={commitVideoSeek} onPointerCancel={commitVideoSeek} onKeyUp={commitVideoSeek} />
+        <button className="video-mute-button" onClick={() => { const muted = !image.muted, video = videoRef.current; if (video) video.muted = muted; onVideoSettings?.({ muted, volume: videoVolume }) }}>{image.muted ? "🔇 取消靜音" : "🔊 靜音"}</button>
+        <label className="video-volume-control"><span>音量</span><input aria-label="影片音量" type="range" min="0" max="1" step=".05" value={videoVolume} onChange={event => { const volume = Number(event.target.value), video = videoRef.current; setVideoVolume(volume); if (video) video.volume = volume }} onPointerUp={() => onVideoSettings?.({ muted: image.muted, volume: videoRef.current?.volume ?? videoVolume })} onPointerCancel={() => onVideoSettings?.({ muted: image.muted, volume: videoRef.current?.volume ?? videoVolume })} onKeyUp={() => onVideoSettings?.({ muted: image.muted, volume: videoRef.current?.volume ?? videoVolume })} /><b>{Math.round(videoVolume * 100)}%</b></label>
       </div>}
     </div>
   );
@@ -525,7 +554,7 @@ export default function Home() {
             urlsRef.current.push(url);
             const mediaType: MediaType = record.mediaType === "video" ? "video" : "image", posterUrl = mediaType === "video" && record.posterBlob ? URL.createObjectURL(record.posterBlob) : undefined;
             if (posterUrl) urlsRef.current.push(posterUrl);
-            return { ...record, mediaType, playbackTime: Number.isFinite(record.playbackTime) ? record.playbackTime : 0, note: record.note ?? "", categoryId: record.categoryId ?? null, transform: normalizeTransform(record.transform), url, posterUrl };
+            return { ...record, mediaType, playbackTime: Number.isFinite(record.playbackTime) ? record.playbackTime : 0, muted: record.muted ?? false, volume: Number.isFinite(record.volume) ? Math.min(1, Math.max(0, record.volume)) : 1, note: record.note ?? "", categoryId: record.categoryId ?? null, transform: normalizeTransform(record.transform), url, posterUrl };
           });
         setImages(restored);
         setCategories(storedCategories.sort((a, b) => a.createdAt - b.createdAt));
@@ -643,6 +672,8 @@ export default function Home() {
           posterBlob: videoInfo?.posterBlob,
           playbackTime: 0,
           duration: videoInfo?.duration,
+          muted: false,
+          volume: 1,
         };
         await saveImage(stored);
         const url = URL.createObjectURL(file);
@@ -1250,7 +1281,7 @@ export default function Home() {
             <div className={`single-view ${activeImage && !singleControlsCollapsed ? "controls-open" : ""}`}>
               <div className="canvas-wrap">
                 {activeImage ? (
-                  <StageCanvas key={activeImage.id} image={activeImage} interactive fitContainer onVideoFrame={(time, posterBlob) => saveVideoFrame(activeImage.id, time, posterBlob)} onVideoError={() => showToast("影片無法播放，請確認為瀏覽器支援的 MP4（H.264）編碼。")} onInteractionStart={() => beginTransformInteraction(activeImage.id)} onInteractionEnd={endTransformInteraction} onTransform={(transform) => updateTransform(activeImage.id, transform)} />
+                  <StageCanvas key={activeImage.id} image={activeImage} interactive fitContainer onVideoFrame={(time, posterBlob) => saveVideoFrame(activeImage.id, time, posterBlob)} onVideoSettings={settings => patchImage(activeImage.id, settings)} onVideoError={() => showToast("影片無法播放，請確認為瀏覽器支援的 MP4（H.264）編碼。")} onInteractionStart={() => beginTransformInteraction(activeImage.id)} onInteractionEnd={endTransformInteraction} onTransform={(transform) => updateTransform(activeImage.id, transform)} />
                 ) : (
                   <button className="empty-stage" onClick={() => inputRef.current?.click()}>
                     <span>＋</span><strong>把背景素材放進舞台</strong><small>可選取 JPG、PNG、WEBP 或 MP4（H.264）</small>
@@ -1373,7 +1404,7 @@ export default function Home() {
               )}
             </div>
           ) : (
-            <Stage3D ref={stage3DRef} image={activeImage} onVideoFrame={(time, posterBlob) => { if (activeImage) saveVideoFrame(activeImage.id, time, posterBlob) }} onVideoError={() => showToast("影片無法播放，請確認為瀏覽器支援的 MP4（H.264）編碼。")} />
+            <Stage3D ref={stage3DRef} image={activeImage} onVideoFrame={(time, posterBlob) => { if (activeImage) saveVideoFrame(activeImage.id, time, posterBlob) }} onVideoSettings={settings => { if (activeImage) patchImage(activeImage.id, settings) }} onVideoError={() => showToast("影片無法播放，請確認為瀏覽器支援的 MP4（H.264）編碼。")} />
           )}
         </section>
       </section>
