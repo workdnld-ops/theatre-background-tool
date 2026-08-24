@@ -27,7 +27,8 @@ const DEFAULT_PEOPLE: Person[] = [
 ].map(([id, x, z, rotation]) => ({ id: String(id), x: Number(x), z: Number(z), rotation: Number(rotation), heightCm: 165, visible: true }));
 const FENCE_DEFAULT_COLOR = "#B7BDC3";
 const DEFAULT_BACKDROP: Backdrop = { style: "solid", x: 0, z: 7.36, rotation: 0, count: 1, widthCm: 122, heightCm: 252, gapCm: 0, color: "#765548", visible: true };
-const TEMPLATE_CAMERA: CameraPose = { fov: 20, position: [0, 1.25, -22], target: [0, 3.5, 7] };
+const CAMERA_FOV_50MM = 22.3;
+const TEMPLATE_CAMERA: CameraPose = { fov: CAMERA_FOV_50MM, position: [0, 1.25, -22], target: [0, 3.5, 7] };
 export type Stage3DHandle = { exportView: () => void; captureView: () => string | null; getCameraPose: () => CameraPose | null };
 type Stage3DProps = {
   image: ProjectionImage | null;
@@ -90,7 +91,7 @@ function readCamera(key: string): CameraPose | null {
   try {
     const raw = localStorage.getItem(key) ?? localStorage.getItem(LEGACY_CAMERA_KEY);
     const v = JSON.parse(raw || "null") as Partial<CameraPose> | null;
-    return v && typeof v.fov === "number" && validTuple(v.position) && validTuple(v.target) ? { fov: v.fov, position: v.position, target: v.target } : null;
+    return v && typeof v.fov === "number" && validTuple(v.position) && validTuple(v.target) ? { fov: CAMERA_FOV_50MM, position: v.position, target: v.target } : null;
   } catch { return null }
 }
 function normalizeLayout(value: unknown): Layout | null {
@@ -121,13 +122,13 @@ function readLayout(storageKey: string): Layout {
   return next;
 }
 function writeCamera(key: string, camera: THREE.PerspectiveCamera, controls: OrbitControls) {
-  try { localStorage.setItem(key, JSON.stringify({ fov: camera.fov, position: camera.position.toArray(), target: controls.target.toArray() })) } catch { /* optional */ }
+  try { localStorage.setItem(key, JSON.stringify({ fov: CAMERA_FOV_50MM, position: camera.position.toArray(), target: controls.target.toArray() })) } catch { /* optional */ }
 }
 function applyPose(camera: THREE.PerspectiveCamera, controls: OrbitControls, pose: CameraPose) {
-  camera.fov = pose.fov; camera.position.set(...pose.position); controls.target.set(...pose.target); camera.updateProjectionMatrix(); controls.update();
+  camera.fov = CAMERA_FOV_50MM; camera.position.set(...pose.position); controls.target.set(...pose.target); camera.updateProjectionMatrix(); controls.update();
 }
 function currentPose(camera: THREE.PerspectiveCamera, controls: OrbitControls): CameraPose {
-  return { fov: camera.fov, position: camera.position.toArray() as [number, number, number], target: controls.target.toArray() as [number, number, number] };
+  return { fov: CAMERA_FOV_50MM, position: camera.position.toArray() as [number, number, number], target: controls.target.toArray() as [number, number, number] };
 }
 const lit = (color: number, roughness = .78, metalness = .02) => new THREE.MeshStandardMaterial({ color, roughness, metalness });
 const unlit = (color: number) => new THREE.MeshBasicMaterial({ color, toneMapped: false });
@@ -404,7 +405,7 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     videoSavedTimeRef.current = image.playbackTime; video.currentTime = Math.min(Math.max(0, image.playbackTime), Math.max(0, video.duration - .04));
   }, [image?.playbackTime, image?.mediaType, showObjectControls]);
 
-  const moveCamera = (name: PresetName) => { const camera = cameraRef.current, controls = controlsRef.current; if (!camera || !controls) return; const poses: Record<Exclude<PresetName, "自由視角">, CameraPose> = { 前排: { fov: 48, position: [0, .78, -5.2], target: [0, 3.8, 8] }, 左側: { fov: 38, position: [-11.5, 2.8, -13.5], target: [0, 3.8, 7.2] }, 右側: { fov: 38, position: [11.5, 2.8, -13.5], target: [0, 3.8, 7.2] }, 俯視: { fov: 42, position: [0, 27, -2], target: [0, 0, 7.2] } }; applyPose(camera, controls, name === "自由視角" ? readCamera(cameraKeyRef.current) ?? TEMPLATE_CAMERA : poses[name]); setPreset(name) };
+  const moveCamera = (name: PresetName) => { const camera = cameraRef.current, controls = controlsRef.current; if (!camera || !controls) return; const poses: Record<Exclude<PresetName, "自由視角">, CameraPose> = { 前排: { fov: CAMERA_FOV_50MM, position: [0, 1.1, -19], target: [0, 3.7, 7.5] }, 左側: { fov: CAMERA_FOV_50MM, position: [-20, 2.1, -29], target: [0, 3.8, 7.2] }, 右側: { fov: CAMERA_FOV_50MM, position: [20, 2.1, -29], target: [0, 3.8, 7.2] }, 俯視: { fov: CAMERA_FOV_50MM, position: [0, 53, -11], target: [0, 0, 7.2] } }; applyPose(camera, controls, name === "自由視角" ? readCamera(cameraKeyRef.current) ?? TEMPLATE_CAMERA : poses[name]); setPreset(name) };
   const resetCamera = () => { const camera = cameraRef.current, controls = controlsRef.current; if (!camera || !controls) return; try { localStorage.removeItem(cameraKeyRef.current) } catch { /* optional */ } applyPose(camera, controls, TEMPLATE_CAMERA); writeCamera(cameraKeyRef.current, camera, controls); setPreset("自由視角") };
   const captureView = () => { const renderer = rendererRef.current, scene = sceneRef.current, camera = cameraRef.current; if (!renderer || !scene || !camera) return null; renderer.render(scene, camera); return renderer.domElement.toDataURL("image/png") };
   const getCameraPose = () => cameraRef.current && controlsRef.current ? currentPose(cameraRef.current, controlsRef.current) : null;
