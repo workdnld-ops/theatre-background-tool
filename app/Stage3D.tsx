@@ -6,10 +6,11 @@ import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 type ProjectionImage = { id?: string; url: string; posterUrl?: string; mediaType: "image" | "video"; playbackTime: number; duration?: number; muted: boolean; volume: number; name: string; note: string; transform: { scale: number; x: number; y: number; brightness: number; contrast: number; saturation: number; hue: number; temperature: number; fit: "width" | "height" } };
 type PresetName = "自由視角" | "前排" | "左側" | "右側" | "俯視";
 export type CameraPose = { fov: number; position: [number, number, number]; target: [number, number, number] };
-type Person = { id: string; x: number; z: number; rotation: number; heightCm: number; visible: boolean };
+type PersonPose = "standing" | "seated";
+type Person = { id: string; x: number; z: number; rotation: number; heightCm: number; visible: boolean; pose: PersonPose };
 type BackdropStyle = "solid" | "fence";
 type Backdrop = { style: BackdropStyle; x: number; z: number; rotation: number; count: number; widthCm: number; heightCm: number; gapCm: number; color: string; visible: boolean };
-type Layout = { version: 6; people: Person[]; backdrop: Backdrop };
+type Layout = { version: 7; people: Person[]; backdrop: Backdrop };
 type Selection = { kind: "person"; id: string } | { kind: "backdrop" };
 type DragState = { selection: Selection; lastX: number; lastZ: number; x: number; z: number; personIds?: string[] };
 type Legacy = { peopleVisible?: boolean; personHeightCm?: number; backdrop252Visible?: boolean; backdrop202Visible?: boolean; backdrop158Visible?: boolean };
@@ -24,7 +25,7 @@ const LEGACY_CAMERA_KEY = "stage-view-template-camera-v3", CAMERA_KEY_PREFIX = "
 const DEFAULT_PEOPLE: Person[] = [
   ["person-1", -5, 3.2, -10], ["person-2", -4.15, 5.8, 7], ["person-3", -1.25, 4.2, -5],
   ["person-4", 1.25, 4.2, 5], ["person-5", 4.15, 5.8, -7], ["person-6", 5, 3.2, 10],
-].map(([id, x, z, rotation]) => ({ id: String(id), x: Number(x), z: Number(z), rotation: Number(rotation), heightCm: 165, visible: true }));
+].map(([id, x, z, rotation]) => ({ id: String(id), x: Number(x), z: Number(z), rotation: Number(rotation), heightCm: 165, visible: true, pose: "standing" as PersonPose }));
 const FENCE_DEFAULT_COLOR = "#B7BDC3";
 const DEFAULT_BACKDROP: Backdrop = { style: "solid", x: 0, z: 7.36, rotation: 0, count: 1, widthCm: 122, heightCm: 252, gapCm: 0, color: "#765548", visible: true };
 const CAMERA_FOV_50MM = 22.3;
@@ -45,8 +46,8 @@ type Stage3DProps = {
 const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
 const round = (n: number, digits = 2) => Math.round(n * 10 ** digits) / 10 ** digits;
 const normalizeRotation = (n: number) => { let r = n % 360; if (r > 180) r -= 360; if (r < -180) r += 360; return round(r, 1) };
-const copyDefaults = (): Layout => ({ version: 6, people: DEFAULT_PEOPLE.map(p => ({ ...p })), backdrop: { ...DEFAULT_BACKDROP } });
-const copyLayout = (layout: Layout): Layout => ({ version: 6, people: layout.people.map(person => ({ ...person })), backdrop: { ...layout.backdrop } });
+const copyDefaults = (): Layout => ({ version: 7, people: DEFAULT_PEOPLE.map(p => ({ ...p })), backdrop: { ...DEFAULT_BACKDROP } });
+const copyLayout = (layout: Layout): Layout => ({ version: 7, people: layout.people.map(person => ({ ...person })), backdrop: { ...layout.backdrop } });
 const fit169 = (w: number, h: number) => w / Math.max(1, h) > 16 / 9 ? { width: h * 16 / 9, height: h } : { width: w, height: w * 9 / 16 };
 const renderPixelRatio = (width: number, height: number, compact: boolean) => {
   const pixelBudget = compact ? 450_000 : 2_600_000, dprLimit = compact ? 1.25 : 1.5;
@@ -63,6 +64,7 @@ function cleanPerson(value: Partial<Person>, fallback: Person): Person {
     rotation: normalizeRotation(Number.isFinite(value.rotation) ? Number(value.rotation) : fallback.rotation),
     heightCm: clamp(Math.round(Number(value.heightCm) || fallback.heightCm), 158, 185),
     visible: value.visible ?? fallback.visible,
+    pose: value.pose === "seated" ? "seated" : "standing",
   };
 }
 function cleanBackdrop(value: Partial<Backdrop>): Backdrop {
@@ -98,7 +100,7 @@ function readCamera(key: string): CameraPose | null {
 }
 function normalizeLayout(value: unknown): Layout | null {
   const v = value as { version?: number; people?: Partial<Person>[]; backdrop?: Partial<Backdrop> } | null;
-  if (!v || ![2, 3, 4, 5, 6].includes(v.version ?? 0) || !Array.isArray(v.people) || !v.backdrop) return null;
+  if (!v || ![2, 3, 4, 5, 6, 7].includes(v.version ?? 0) || !Array.isArray(v.people) || !v.backdrop) return null;
   const seen = new Set<string>();
   const people = v.people.slice(0, MAX_PEOPLE).map((p, i) => {
     const fallback = DEFAULT_PEOPLE[i] ?? { ...DEFAULT_PEOPLE[0], id: `person-${i + 1}`, x: 0, z: 3.2 }, next = cleanPerson(p, fallback);
@@ -108,7 +110,7 @@ function normalizeLayout(value: unknown): Layout | null {
   const backdrop = cleanBackdrop(v.backdrop);
   if (v.version === 2 && backdrop.gapCm === 20) backdrop.gapCm = 0;
   if (v.version === 5 && backdrop.style === "fence" && backdrop.color.toLowerCase() === DEFAULT_BACKDROP.color) backdrop.color = FENCE_DEFAULT_COLOR;
-  return { version: 6, people, backdrop: clampBackdrop(backdrop) };
+  return { version: 7, people, backdrop: clampBackdrop(backdrop) };
 }
 function readLayout(storageKey: string): Layout {
   try { const stored = localStorage.getItem(storageKey) ?? (storageKey === objectLayoutKey(null) ? localStorage.getItem(LAYOUT_KEY) : null), normalized = normalizeLayout(JSON.parse(stored || "null")); if (normalized) return normalized } catch { /* migrate below */ }
@@ -141,15 +143,27 @@ function box(parent: THREE.Object3D, size: [number, number, number], position: [
 function instancedBoxes(parent: THREE.Object3D, size: [number, number, number], positions: [number, number, number][], material: THREE.Material, cast = false) {
   const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(...size), material, positions.length), matrix = new THREE.Matrix4(); positions.forEach((position, i) => { matrix.makeTranslation(...position); mesh.setMatrixAt(i, matrix) }); mesh.castShadow = cast; parent.add(mesh); return mesh;
 }
-function makePerson(material: THREE.Material, markerMaterial: THREE.Material) {
+function makePerson(material: THREE.Material, chairMaterial: THREE.Material, markerMaterial: THREE.Material) {
   const part = (geometry: THREE.BufferGeometry, x: number, y: number, z = 0, rotationZ = 0) => { if (rotationZ) geometry.rotateZ(rotationZ); geometry.translate(x, y, z); return geometry };
-  const parts = [
+  const standingParts = [
     part(new THREE.CapsuleGeometry(.2, .68, 3, 6), 0, .98), part(new THREE.SphereGeometry(.16, 8, 6), 0, 1.54),
     part(new THREE.CylinderGeometry(.055, .065, .78, 6), -.09, .39, 0, -.05), part(new THREE.CylinderGeometry(.055, .065, .78, 6), .09, .39, 0, .05),
     part(new THREE.CylinderGeometry(.055, .07, .68, 6), -.255, 1.04, 0, -.08), part(new THREE.CylinderGeometry(.055, .07, .68, 6), .255, 1.04, 0, .08),
   ];
-  const geometry = mergeGeometries(parts, false); parts.forEach(g => g.dispose());
-  const group = new THREE.Group(); if (geometry) { const mesh = new THREE.Mesh(geometry, material); mesh.castShadow = true; group.add(mesh) }
+  const standingGeometry = mergeGeometries(standingParts, false); standingParts.forEach(g => g.dispose());
+  const seatedParts = [
+    part(new THREE.CapsuleGeometry(.2, .42, 3, 6), 0, .91), part(new THREE.SphereGeometry(.16, 8, 6), 0, 1.36),
+    part(new THREE.CylinderGeometry(.06, .07, .5, 6).rotateX(Math.PI / 2), -.1, .56, -.2), part(new THREE.CylinderGeometry(.06, .07, .5, 6).rotateX(Math.PI / 2), .1, .56, -.2),
+    part(new THREE.CylinderGeometry(.055, .065, .5, 6), -.1, .27, -.44), part(new THREE.CylinderGeometry(.055, .065, .5, 6), .1, .27, -.44),
+    part(new THREE.CylinderGeometry(.055, .07, .5, 6), -.255, .9, -.08, -.15), part(new THREE.CylinderGeometry(.055, .07, .5, 6), .255, .9, -.08, .15),
+  ];
+  const seatedGeometry = mergeGeometries(seatedParts, false); seatedParts.forEach(g => g.dispose());
+  const group = new THREE.Group(), standing = new THREE.Group(), seated = new THREE.Group(); standing.name = "standing-person"; seated.name = "seated-person";
+  if (standingGeometry) { const mesh = new THREE.Mesh(standingGeometry, material); mesh.castShadow = true; standing.add(mesh) }
+  if (seatedGeometry) { const mesh = new THREE.Mesh(seatedGeometry, material); mesh.castShadow = true; seated.add(mesh) }
+  box(seated, [.62, .08, .62], [0, .51, 0], chairMaterial, true); box(seated, [.62, .68, .08], [0, .82, .28], chairMaterial, true);
+  [[-.25, .24, -.24], [.25, .24, -.24], [-.25, .24, .24], [.25, .24, .24]].forEach(position => box(seated, [.065, .48, .065], position as [number, number, number], chairMaterial, true));
+  group.add(standing, seated); seated.visible = false;
   const marker = new THREE.Mesh(new THREE.RingGeometry(.28, .35, 24), markerMaterial); marker.name = SELECTION_MARKER_NAME; marker.rotation.x = -Math.PI / 2; marker.position.y = .025; marker.renderOrder = 8; marker.visible = false; group.add(marker); return group;
 }
 function makePanel(panelMat: THREE.Material, frameMat: THREE.Material, width: number, height: number, style: BackdropStyle) {
@@ -206,7 +220,7 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
   const objectKeyRef = useRef(objectLayoutKey(image));
   const mountRef = useRef<HTMLDivElement>(null), rendererRef = useRef<THREE.WebGLRenderer | null>(null), cameraRef = useRef<THREE.PerspectiveCamera | null>(null), controlsRef = useRef<OrbitControls | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null), videoFrameRef = useRef(0), drawVideoRef = useRef<() => void>(() => {}), persistVideoRef = useRef<() => void>(() => {}), videoSavedTimeRef = useRef(0), videoScrubbingRef = useRef(false), imageRef = useRef(image);
-  const sceneRef = useRef<THREE.Scene | null>(null), screenMatRef = useRef<THREE.MeshBasicMaterial | null>(null), textureRef = useRef<THREE.Texture | null>(null), personMatRef = useRef<THREE.Material | null>(null), markerMatRef = useRef<THREE.Material | null>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null), screenMatRef = useRef<THREE.MeshBasicMaterial | null>(null), textureRef = useRef<THREE.Texture | null>(null), personMatRef = useRef<THREE.Material | null>(null), chairMatRef = useRef<THREE.Material | null>(null), markerMatRef = useRef<THREE.Material | null>(null);
   const backdropMatsRef = useRef<{ panel: THREE.Material; frame: THREE.Material } | null>(null), peopleRef = useRef(new Map<string, THREE.Group>()), backdropRef = useRef<THREE.Group | null>(null), backdropSpecRef = useRef("");
   const dragRef = useRef<DragState | null>(null), renderRef = useRef<() => void>(() => {}), flashSelectionRef = useRef<(duration?: number) => void>(() => {}), markerVisibleRef = useRef(false), visibleMarkersRef = useRef<THREE.Object3D[]>([]), markerTimerRef = useRef<number | null>(null), timerRef = useRef<number | null>(null), applyingSyncRef = useRef(false), onCameraChangeRef = useRef(onCameraChange), onVideoFrameRef = useRef(onVideoFrame), onVideoSettingsRef = useRef(onVideoSettings), onVideoErrorRef = useRef(onVideoError);
   const [preset, setPreset] = useState<PresetName>("自由視角"), [layout, rawSetLayout] = useState<Layout>(() => readLayout(objectKeyRef.current)), [selection, setSelection] = useState<Selection>({ kind: "backdrop" }), [error, setError] = useState(""), [notice, setNotice] = useState("");
@@ -258,7 +272,7 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     const remember = () => { if (!dragRef.current) { writeCamera(cameraKeyRef.current, camera, controls); setPreset("自由視角") } };
     controls.addEventListener("change", emitCamera); controls.addEventListener("end", remember);
     scene.add(new THREE.HemisphereLight(0x9cb5ca, 0x19120f, 1.1)); const key = new THREE.SpotLight(0xffe4c5, 760, 52, Math.PI / 4.5, .42, 1.4); key.position.set(-5, 15, -5); key.target.position.set(0, 0, 7); key.castShadow = true; key.shadow.mapSize.set(1024, 1024); scene.add(key, key.target); const fill = new THREE.DirectionalLight(0x8aa9d7, 1.6); fill.position.set(7, 9, -8); scene.add(fill);
-    const black = lit(0x090909, .92), curtain = lit(0x050505, 1), floor = lit(0x3b3936, .88), apron = lit(0x3c241b, .9), frameMat = lit(0xaaa5ba, .35, .2), line = lit(0xc8c3ba, .82); personMatRef.current = lit(0x747678, .72, .05); markerMatRef.current = new THREE.MeshBasicMaterial({ color: 0xff754c, transparent: true, opacity: .82, toneMapped: false, depthWrite: false }); backdropMatsRef.current = { panel: unlit(0x765548), frame: unlit(0x2b2927) };
+    const black = lit(0x090909, .92), curtain = lit(0x050505, 1), floor = lit(0x3b3936, .88), apron = lit(0x3c241b, .9), frameMat = lit(0xaaa5ba, .35, .2), line = lit(0xc8c3ba, .82); personMatRef.current = lit(0x747678, .72, .05); chairMatRef.current = lit(0x52463d, .84, .02); markerMatRef.current = new THREE.MeshBasicMaterial({ color: 0xff754c, transparent: true, opacity: .82, toneMapped: false, depthWrite: false }); backdropMatsRef.current = { panel: unlit(0x765548), frame: unlit(0x2b2927) };
     box(scene, [27, .24, STAGE.depth], [0, -.12, STAGE.depth / 2], floor);
     const shape = new THREE.Shape(); shape.moveTo(-9.1, 0); shape.lineTo(9.1, 0); shape.quadraticCurveTo(0, STAGE.apronDepth * 2, -9.1, 0); const apronMesh = new THREE.Mesh(new THREE.ShapeGeometry(shape, 48), apron); apronMesh.rotation.x = -Math.PI / 2; apronMesh.position.y = -.14; scene.add(apronMesh);
     instancedBoxes(scene, [27, .025, .035], Array.from({ length: LINE_COUNT }, (_, i) => [0, .02, i * LINE_GAP] as [number, number, number]), line);
@@ -308,13 +322,13 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
     renderer.domElement.addEventListener("pointerdown", focusCanvas);
     renderer.domElement.addEventListener("pointerdown", down, true); renderer.domElement.addEventListener("pointermove", move, true); renderer.domElement.addEventListener("pointerup", up, true); renderer.domElement.addEventListener("pointercancel", up, true);
     const ro = new ResizeObserver(() => { const s = fit169(Math.max(1, mount.clientWidth), Math.max(1, mount.clientHeight)); renderer.setPixelRatio(renderPixelRatio(s.width, s.height, compact)); renderer.setSize(s.width, s.height, false); camera.aspect = 16 / 9; camera.updateProjectionMatrix(); requestRender() }); ro.observe(mount); requestRender();
-    return () => { cancelAnimationFrame(frame); if (markerTimerRef.current) clearTimeout(markerTimerRef.current); ro.disconnect(); renderer.domElement.removeEventListener("pointerdown", focusCanvas); controls.removeEventListener("change", emitCamera); controls.removeEventListener("end", remember); controls.dispose(); renderRef.current = () => {}; flashSelectionRef.current = () => {}; visibleMarkersRef.current = []; textureRef.current?.dispose(); scene.traverse(o => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose()) } }); renderer.dispose(); renderer.domElement.remove(); rendererRef.current = cameraRef.current = controlsRef.current = sceneRef.current = screenMatRef.current = personMatRef.current = markerMatRef.current = backdropMatsRef.current = null; peopleRef.current.clear(); backdropRef.current = null };
+    return () => { cancelAnimationFrame(frame); if (markerTimerRef.current) clearTimeout(markerTimerRef.current); ro.disconnect(); renderer.domElement.removeEventListener("pointerdown", focusCanvas); controls.removeEventListener("change", emitCamera); controls.removeEventListener("end", remember); controls.dispose(); renderRef.current = () => {}; flashSelectionRef.current = () => {}; visibleMarkersRef.current = []; textureRef.current?.dispose(); scene.traverse(o => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose()) } }); renderer.dispose(); renderer.domElement.remove(); rendererRef.current = cameraRef.current = controlsRef.current = sceneRef.current = screenMatRef.current = personMatRef.current = chairMatRef.current = markerMatRef.current = backdropMatsRef.current = null; peopleRef.current.clear(); backdropRef.current = null };
   }, []);
 
   useEffect(() => {
-    const scene = sceneRef.current, mat = personMatRef.current, markerMat = markerMatRef.current; if (!scene || !mat || !markerMat) return; const ids = new Set(layout.people.map(p => p.id));
+    const scene = sceneRef.current, mat = personMatRef.current, chairMat = chairMatRef.current, markerMat = markerMatRef.current; if (!scene || !mat || !chairMat || !markerMat) return; const ids = new Set(layout.people.map(p => p.id));
     peopleRef.current.forEach((g, id) => { if (!ids.has(id)) { scene.remove(g); g.traverse(o => { if (o instanceof THREE.Mesh) o.geometry.dispose() }); peopleRef.current.delete(id) } });
-    layout.people.forEach(p => { let g = peopleRef.current.get(p.id); if (!g) { g = makePerson(mat, markerMat); g.userData.selection = { kind: "person", id: p.id } satisfies Selection; scene.add(g); peopleRef.current.set(p.id, g) } g.position.set(p.x, 0, p.z); g.rotation.y = THREE.MathUtils.degToRad(p.rotation); g.scale.setScalar(p.heightCm / 100 / PERSON_HEIGHT); g.visible = p.visible });
+    layout.people.forEach(p => { let g = peopleRef.current.get(p.id); if (!g) { g = makePerson(mat, chairMat, markerMat); g.userData.selection = { kind: "person", id: p.id } satisfies Selection; scene.add(g); peopleRef.current.set(p.id, g) } const standing = g.getObjectByName("standing-person"), seated = g.getObjectByName("seated-person"); if (standing) standing.visible = p.pose === "standing"; if (seated) seated.visible = p.pose === "seated"; g.position.set(p.x, 0, p.z); g.rotation.y = THREE.MathUtils.degToRad(p.rotation); g.scale.setScalar(p.heightCm / 100 / PERSON_HEIGHT); g.visible = p.visible });
     if (rendererRef.current) rendererRef.current.shadowMap.needsUpdate = true;
     renderRef.current();
   }, [layout.people]);
@@ -451,7 +465,7 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
   const anyPersonVisible = layout.people.some(person => person.visible);
   const toggleAllPeople = () => { const visible = !anyPersonVisible; setLayout(current => ({ ...current, people: current.people.map(person => ({ ...person, visible })) })); showNotice(visible ? "已顯示全部人物。" : "已隱藏全部人物。"); };
 
-  return <div className={`stage3d-shell ${compact ? "compact" : ""} ${showObjectControls && !controlsCollapsed ? "controls-open" : ""}`}>
+  return <div className={`stage3d-shell ${compact ? "compact" : ""} ${showObjectControls && !controlsCollapsed ? "controls-open" : ""} ${image?.mediaType === "video" && showObjectControls ? "has-video-controls" : ""}`}>
     <div ref={mountRef} className="stage3d-canvas" aria-label="臺中市港區藝術中心 3D 舞台預覽" />
     {error && <div className="stage3d-error">{error}</div>}{notice && <div className="stage3d-notice" role="status">{notice}</div>}
     {!compact && <div className="stage3d-badges"><span>鏡框 15.42 × 8.50 m</span><span>天幕深度 10.65 m</span><span>投影 13.20 × 7.43 m・16:9</span></div>}
@@ -460,7 +474,7 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
       <div className="video-primary-actions"><button disabled={videoPlaying} onClick={() => { const video = videoRef.current; if (video) void video.play().catch(() => onVideoErrorRef.current?.()) }}>▶ 播放</button><button disabled={!videoPlaying} onClick={() => videoRef.current?.pause()}>Ⅱ 暫停</button></div>
       <span className="video-time-label">{formatMediaTime(videoTime)}／{formatMediaTime(videoDuration)}</span>
       <input className="video-timeline" aria-label="3D 舞台影片時間軸" type="range" min="0" max={Math.max(.01, videoDuration)} step=".01" value={Math.min(videoTime, Math.max(.01, videoDuration))} onPointerDown={() => { videoScrubbingRef.current = true }} onKeyDown={() => { videoScrubbingRef.current = true }} onChange={event => { const video = videoRef.current, time = Number(event.target.value); setVideoTime(time); if (video) video.currentTime = time }} onPointerUp={() => { videoScrubbingRef.current = false; if (!videoRef.current?.seeking) persistVideoRef.current() }} onPointerCancel={() => { videoScrubbingRef.current = false; if (!videoRef.current?.seeking) persistVideoRef.current() }} onKeyUp={() => { videoScrubbingRef.current = false; if (!videoRef.current?.seeking) persistVideoRef.current() }} />
-      <button className="video-mute-button" onClick={() => { const muted = !image.muted, video = videoRef.current; if (video) video.muted = muted; onVideoSettingsRef.current?.({ muted, volume: videoVolume }) }}>{image.muted ? "🔇 取消靜音" : "🔊 靜音"}</button>
+      <button className="video-mute-button" aria-label={image.muted ? "取消靜音" : "靜音"} title={image.muted ? "取消靜音" : "靜音"} onClick={() => { const muted = !image.muted, video = videoRef.current; if (video) video.muted = muted; onVideoSettingsRef.current?.({ muted, volume: videoVolume }) }}>{image.muted ? "🔇" : "🔊"}</button>
       <label className="video-volume-control"><span>音量</span><input aria-label="3D 舞台影片音量" type="range" min="0" max="1" step=".05" value={videoVolume} onChange={event => { const volume = Number(event.target.value), video = videoRef.current; setVideoVolume(volume); if (video) video.volume = volume }} onPointerUp={() => onVideoSettingsRef.current?.({ muted: image.muted, volume: videoRef.current?.volume ?? videoVolume })} onPointerCancel={() => onVideoSettingsRef.current?.({ muted: image.muted, volume: videoRef.current?.volume ?? videoVolume })} onKeyUp={() => onVideoSettingsRef.current?.({ muted: image.muted, volume: videoRef.current?.volume ?? videoVolume })} /><b>{Math.round(videoVolume * 100)}%</b></label>
     </div>}
     {showObjectControls && controlsCollapsed && <button className="stage3d-panel-open" onClick={() => setControlsCollapsed(false)}>‹ 展開物件控制</button>}
@@ -478,6 +492,7 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
             <label><span>選擇人物</span><select value={person.id} onChange={e => { setActivePersonId(e.target.value); setSelectedPersonIds([e.target.value]); setSelection({ kind: "person", id: e.target.value }); }}>{layout.people.map((p, i) => <option key={p.id} value={p.id}>人物 {i + 1}{p.visible ? "" : "（隱藏）"}</option>)}</select></label>
             <label className="stage3d-visible-check"><input type="checkbox" checked={controlledPeople.every(p => p.visible)} onChange={e => updatePeople(controlledPeople.map(p => p.id), { visible: e.target.checked })} />顯示</label>
           </div>
+          <label className="stage3d-person-type"><span>人物型態</span><select value={person.pose} onChange={e => updatePeople(controlledPeople.map(p => p.id), { pose: e.target.value as PersonPose })}><option value="standing">站立</option><option value="seated">坐在椅子上</option></select></label>
           <label className="stage3d-range-field"><span>{selectedPeople.length > 1 ? `身高（${selectedPeople.length}人）` : "人物身高"}</span><input title="雙擊重設為 165 cm" type="range" min="158" max="185" value={person.heightCm} onDoubleClick={() => updatePeople(controlledPeople.map(p => p.id), { heightCm: 165 })} onChange={e => updatePeople(controlledPeople.map(p => p.id), { heightCm: +e.target.value })} /><b>{person.heightCm} cm</b></label>
           <div className="stage3d-quick-actions"><button onClick={() => snapPerson(person.id)}>對齊地墊線</button><button onClick={() => resetPerson(person.id)}>重設人物</button></div>
           <div className="stage3d-person-actions"><button onClick={() => addPerson(person)} disabled={layout.people.length >= MAX_PEOPLE}>複製人物</button><button className="danger" onClick={() => deletePerson(person.id)}>刪除人物</button></div>

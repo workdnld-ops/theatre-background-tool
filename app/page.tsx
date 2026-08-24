@@ -39,6 +39,7 @@ type StoredImage = {
 type LibraryImage = StoredImage & { url: string; posterUrl?: string };
 type Category = { id: string; name: string; createdAt: number };
 type TransformHistory = { past: Transform[]; future: Transform[] };
+type VideoCaptureRef = { current: (() => Promise<{ time: number; posterBlob: Blob }>) | null };
 type OfflineState = "preparing" | "ready" | "offline" | "disabled";
 interface InstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -285,6 +286,7 @@ function StageCanvas({
   onInteractionEnd,
   onVideoFrame,
   onVideoSettings,
+  videoCaptureRef,
   onVideoError,
 }: {
   image: LibraryImage;
@@ -297,6 +299,7 @@ function StageCanvas({
   onInteractionEnd?: () => void;
   onVideoFrame?: (time: number, posterBlob: Blob) => void;
   onVideoSettings?: (settings: { muted: boolean; volume: number }) => void;
+  videoCaptureRef?: VideoCaptureRef;
   onVideoError?: () => void;
 }) {
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -327,6 +330,13 @@ function StageCanvas({
   }, [image.id, interactive]);
 
   useEffect(() => {
+    if (!videoCaptureRef || image.mediaType !== "video" || !interactive) return;
+    const capture = async () => { const video = videoRef.current; if (!video || video.readyState < 2) throw new Error("video frame unavailable"); return { time: video.currentTime, posterBlob: await captureVideoPoster(video) } };
+    videoCaptureRef.current = capture;
+    return () => { if (videoCaptureRef.current === capture) videoCaptureRef.current = null };
+  }, [image.id, image.mediaType, interactive, videoCaptureRef]);
+
+  useEffect(() => {
     const video = videoRef.current;
     if (image.mediaType !== "video" || !video || !video.paused || video.readyState < 1 || Math.abs(video.currentTime - image.playbackTime) < .05) return;
     savedVideoTimeRef.current = image.playbackTime; setVideoTime(image.playbackTime); video.currentTime = Math.min(Math.max(0, image.playbackTime), Math.max(0, video.duration - .04));
@@ -347,24 +357,25 @@ function StageCanvas({
   useLayoutEffect(() => {
     if (!fitContainer) return;
     const canvas = canvasRef.current;
-    const parent = canvas?.parentElement;
-    if (!parent) return;
-    const container: HTMLElement = parent;
+    const container = canvas?.closest(".canvas-wrap") as HTMLElement | null;
+    if (!container) return;
+    const target = container;
     const ratio = STAGE_CANVAS_RATIO;
 
     function measure() {
-      const style = window.getComputedStyle(container);
-      const availableWidth = container.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-      const availableHeight = container.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+      const style = window.getComputedStyle(target);
+      const availableWidth = target.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const controlsHeight = interactive && image.mediaType === "video" ? window.innerWidth <= 720 ? 118 : 62 : 0;
+      const availableHeight = target.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) - controlsHeight;
       const width = Math.max(1, Math.min(availableWidth, availableHeight * ratio, 1120));
       setFittedSize({ width, height: width / ratio });
     }
 
     measure();
     const observer = new ResizeObserver(measure);
-    observer.observe(container);
+    observer.observe(target);
     return () => observer.disconnect();
-  }, [fitContainer]);
+  }, [fitContainer, image.mediaType, interactive]);
 
   function pointerDown(event: PointerEvent<HTMLDivElement>) {
     if (!interactive) return;
@@ -395,16 +406,17 @@ function StageCanvas({
   }
 
   return (
-    <div
-      ref={canvasRef}
-      className={`stage-canvas ${interactive ? "is-interactive" : ""} ${fitContainer ? "fits-container" : ""}`}
-      style={fitContainer && fittedSize ? { width: fittedSize.width, height: fittedSize.height } : undefined}
-      onClick={onActivate}
-      onPointerDown={pointerDown}
-      onPointerMove={pointerMove}
-      onPointerUp={() => { lastPointer.current = null; onInteractionEnd?.() }}
-      onPointerCancel={() => { lastPointer.current = null; onInteractionEnd?.() }}
-    >
+    <div className={`stage-media-shell ${fitContainer ? "fits-container" : ""} ${interactive && image.mediaType === "video" ? "has-video-controls" : ""}`} style={fitContainer && fittedSize ? { width: fittedSize.width } : undefined}>
+      <div
+        ref={canvasRef}
+        className={`stage-canvas ${interactive ? "is-interactive" : ""} ${fitContainer ? "fits-container" : ""}`}
+        style={fitContainer && fittedSize ? { width: fittedSize.width, height: fittedSize.height } : undefined}
+        onClick={onActivate}
+        onPointerDown={pointerDown}
+        onPointerMove={pointerMove}
+        onPointerUp={() => { lastPointer.current = null; onInteractionEnd?.() }}
+        onPointerCancel={() => { lastPointer.current = null; onInteractionEnd?.() }}
+      >
       <div
         className="projection-frame"
         style={{
@@ -442,12 +454,13 @@ function StageCanvas({
         />}
       </div>
       <img className="stage-overlay" src={STAGE_OVERLAY_URL} alt="劇場舞台比例模擬框" draggable={false} />
-      {label && <span className="compare-label">{label}</span>}
+        {label && <span className="compare-label">{label}</span>}
+      </div>
       {interactive && image.mediaType === "video" && <div className="video-playback-controls" onPointerDown={event => event.stopPropagation()}>
         <div className="video-primary-actions"><button disabled={videoPlaying} onClick={() => { const video = videoRef.current; if (video) void video.play().catch(() => onVideoError?.()) }}>▶ 播放</button><button disabled={!videoPlaying} onClick={() => videoRef.current?.pause()}>Ⅱ 暫停</button></div>
         <span className="video-time-label">{formatMediaTime(videoTime)}／{formatMediaTime(videoDuration)}</span>
         <input className="video-timeline" aria-label="影片時間軸" type="range" min="0" max={Math.max(.01, videoDuration)} step=".01" value={Math.min(videoTime, Math.max(.01, videoDuration))} onPointerDown={() => { videoScrubbingRef.current = true }} onKeyDown={() => { videoScrubbingRef.current = true }} onChange={event => { const video = videoRef.current, time = Number(event.target.value); setVideoTime(time); if (video) video.currentTime = time }} onPointerUp={commitVideoSeek} onPointerCancel={commitVideoSeek} onKeyUp={commitVideoSeek} />
-        <button className="video-mute-button" onClick={() => { const muted = !image.muted, video = videoRef.current; if (video) video.muted = muted; onVideoSettings?.({ muted, volume: videoVolume }) }}>{image.muted ? "🔇 取消靜音" : "🔊 靜音"}</button>
+        <button className="video-mute-button" aria-label={image.muted ? "取消靜音" : "靜音"} title={image.muted ? "取消靜音" : "靜音"} onClick={() => { const muted = !image.muted, video = videoRef.current; if (video) video.muted = muted; onVideoSettings?.({ muted, volume: videoVolume }) }}>{image.muted ? "🔇" : "🔊"}</button>
         <label className="video-volume-control"><span>音量</span><input aria-label="影片音量" type="range" min="0" max="1" step=".05" value={videoVolume} onChange={event => { const volume = Number(event.target.value), video = videoRef.current; setVideoVolume(volume); if (video) video.volume = volume }} onPointerUp={() => onVideoSettings?.({ muted: image.muted, volume: videoRef.current?.volume ?? videoVolume })} onPointerCancel={() => onVideoSettings?.({ muted: image.muted, volume: videoRef.current?.volume ?? videoVolume })} onKeyUp={() => onVideoSettings?.({ muted: image.muted, volume: videoRef.current?.volume ?? videoVolume })} /><b>{Math.round(videoVolume * 100)}%</b></label>
       </div>}
     </div>
@@ -538,6 +551,7 @@ export default function Home() {
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const stage3DRef = useRef<Stage3DHandle>(null);
+  const singleVideoCaptureRef = useRef<VideoCaptureRef["current"]>(null);
   const compare3DRefs = useRef(new Map<string, Stage3DHandle>());
   const compareCameraSerialRef = useRef(0);
   const urlsRef = useRef<string[]>([]);
@@ -965,8 +979,7 @@ export default function Home() {
   }
 
   async function exportComposite(image: LibraryImage) {
-    if (image.mediaType === "video") return showToast("影片不提供單張圖片匯出，請使用並排比較匯出靜態畫面。");
-    const [background, overlay] = await Promise.all([loadHtmlImage(image.url), loadHtmlImage(STAGE_OVERLAY_URL)]);
+    const [background, overlay] = await Promise.all([loadHtmlImage(mediaPreviewUrl(image)), loadHtmlImage(STAGE_OVERLAY_URL)]);
     const canvas = document.createElement("canvas");
     canvas.width = STAGE_CANVAS_WIDTH;
     canvas.height = STAGE_CANVAS_HEIGHT;
@@ -978,6 +991,16 @@ export default function Home() {
     link.href = canvas.toDataURL("image/png");
     link.click();
     showToast("預覽圖已匯出。" );
+  }
+
+  async function exportCurrentVideoFrame(image: LibraryImage) {
+    const capture = singleVideoCaptureRef.current;
+    if (image.mediaType !== "video" || !capture) return showToast("影片畫面還在準備中，請稍候再試。");
+    try {
+      const { time, posterBlob } = await capture(), posterUrl = URL.createObjectURL(posterBlob);
+      try { await exportComposite({ ...image, playbackTime: time, posterBlob, posterUrl }) } finally { URL.revokeObjectURL(posterUrl) }
+      saveVideoFrame(image.id, time, posterBlob);
+    } catch { showToast("目前影片畫面無法擷取，請先確認影片可以正常播放。") }
   }
 
   async function exportCroppedProjection(image: LibraryImage) {
@@ -1263,11 +1286,12 @@ export default function Home() {
                   <button className="export-secondary" disabled={!activeImage} onClick={() => activeImage && void exportCroppedProjection(activeImage)}>↓ 匯出裁切圖</button>
                   <button className="export-action" disabled={!activeImage} onClick={() => activeImage && void exportComposite(activeImage)}>↓ 匯出預覽</button>
                 </>}
+                {viewMode === "single" && activeImage?.mediaType === "video" && <button className="export-action" onClick={() => void exportCurrentVideoFrame(activeImage)}>↓ 匯出目前畫面</button>}
                 {viewMode === "compare" && <>
                   <button className="clear-action" disabled={!compareIds.length} onClick={() => { setCompareIds([]); showToast("已清空比較選擇。"); }}>清空重選</button>
                   <button className="export-action" disabled={!comparedImages.length} onClick={() => void exportComparison()}>↓ 匯出{comparePreviewMode === "threeD" ? " 3D" : ""}比較圖</button>
                 </>}
-                {viewMode === "threeD" && <button className="export-action" onClick={() => stage3DRef.current?.exportView()}>↓ 匯出視角</button>}
+                {viewMode === "threeD" && <button className="export-action" onClick={() => stage3DRef.current?.exportView()}>↓ 匯出3D預覽</button>}
               </div>
               <div className="view-tabs">
                 <button className={viewMode === "single" ? "active" : ""} onClick={() => setViewMode("single")}>單張調整</button>
@@ -1281,7 +1305,7 @@ export default function Home() {
             <div className={`single-view ${activeImage && !singleControlsCollapsed ? "controls-open" : ""}`}>
               <div className="canvas-wrap">
                 {activeImage ? (
-                  <StageCanvas key={activeImage.id} image={activeImage} interactive fitContainer onVideoFrame={(time, posterBlob) => saveVideoFrame(activeImage.id, time, posterBlob)} onVideoSettings={settings => patchImage(activeImage.id, settings)} onVideoError={() => showToast("影片無法播放，請確認為瀏覽器支援的 MP4（H.264）編碼。")} onInteractionStart={() => beginTransformInteraction(activeImage.id)} onInteractionEnd={endTransformInteraction} onTransform={(transform) => updateTransform(activeImage.id, transform)} />
+                  <StageCanvas key={activeImage.id} image={activeImage} interactive fitContainer videoCaptureRef={singleVideoCaptureRef} onVideoFrame={(time, posterBlob) => saveVideoFrame(activeImage.id, time, posterBlob)} onVideoSettings={settings => patchImage(activeImage.id, settings)} onVideoError={() => showToast("影片無法播放，請確認為瀏覽器支援的 MP4（H.264）編碼。")} onInteractionStart={() => beginTransformInteraction(activeImage.id)} onInteractionEnd={endTransformInteraction} onTransform={(transform) => updateTransform(activeImage.id, transform)} />
                 ) : (
                   <button className="empty-stage" onClick={() => inputRef.current?.click()}>
                     <span>＋</span><strong>把背景素材放進舞台</strong><small>可選取 JPG、PNG、WEBP 或 MP4（H.264）</small>

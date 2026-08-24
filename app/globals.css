@@ -117,7 +117,10 @@ h3 { font-size: 18px; }
 .single-view { position: relative; min-height: 0; flex: 1; display: flex; overflow: hidden; }
 .canvas-wrap { min-width: 0; min-height: 0; flex: 1 1 0; background: #242321; border-radius: 14px; padding: clamp(8px, 1.5vw, 18px); display: grid; place-items: center; box-shadow: inset 0 0 0 1px #ffffff12; overflow: hidden; transition: margin-right .2s ease; }
 .single-view.controls-open .canvas-wrap { margin-right: 342px; }
+.stage-media-shell { width: min(100%, 1120px); min-width: 0; display: flex; flex-direction: column; align-items: stretch; }
+.stage-media-shell.fits-container { width: 1px; flex: none; }
 .stage-canvas { position: relative; width: min(100%, 1120px); aspect-ratio: 16/9; overflow: hidden; background: #050505; box-shadow: 0 15px 40px #0008; touch-action: none; }
+.stage-media-shell .stage-canvas { width: 100%; }
 .stage-canvas.fits-container { width: 1px; height: 1px; max-width: none; max-height: none; aspect-ratio: auto; flex: none; }
 .stage-canvas.is-interactive { cursor: grab; }
 .stage-canvas.is-interactive:active { cursor: grabbing; }
@@ -126,7 +129,7 @@ h3 { font-size: 18px; }
 .background-image.fit-width { width: 100%; height: auto; }
 .background-image.fit-height { width: auto; height: 100%; }
 .stage-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; user-select: none; z-index: 2; }
-.video-playback-controls { position: absolute; z-index: 4; left: 50%; bottom: 12px; transform: translateX(-50%); width: min(calc(100% - 24px), 900px); display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 7px; border: 1px solid #ffffff24; border-radius: 9px; background: #171513ed; color: white; box-shadow: 0 5px 18px #0007; }
+.video-playback-controls { position: static; z-index: 4; width: 100%; box-sizing: border-box; margin-top: 7px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 7px; border: 1px solid #ffffff24; border-radius: 9px; background: #171513; color: white; box-shadow: 0 5px 18px #0007; }
 .video-playback-controls button { border: 1px solid #ffffff24; border-radius: 6px; background: #f4efe8; color: #332f2a; padding: 6px 10px; font-size: 12px; font-weight: 900; }
 .video-playback-controls button:disabled { opacity: .42; }
 .video-playback-controls span { color: #c3bdb6; padding: 0 4px; font-size: 12px; font-weight: 800; white-space: nowrap; }
@@ -214,6 +217,7 @@ h3 { font-size: 18px; }
 
 .stage3d-shell { position: relative; min-height: 0; flex: 1; overflow: hidden; border-radius: 14px; background: #070809; box-shadow: inset 0 0 0 1px #ffffff12; }
 .stage3d-canvas { position: absolute; inset: 0; display: grid; place-items: center; background: #050606; }
+.stage3d-shell.has-video-controls .stage3d-canvas { bottom: 62px; }
 .stage3d-shell.controls-open .stage3d-canvas { right: 330px; }
 .stage3d-canvas canvas { display: block; max-width: 100%; max-height: 100%; touch-action: none; cursor: grab; box-shadow: 0 16px 45px #000b; }
 .stage3d-canvas canvas:active { cursor: grabbing; }
@@ -227,7 +231,7 @@ h3 { font-size: 18px; }
 .stage3d-presets button.active { background: #f1ece4; color: #25211e; }
 .stage3d-presets button.reset-view { color: #dfb6a7; }
 .stage3d-presets button.reset-view:hover { background: #a9503838; color: #ffd4c5; }
-.stage3d-video-controls { position: absolute; z-index: 3; left: 14px; right: 14px; bottom: 58px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 7px; border: 1px solid #ffffff24; border-radius: 9px; background: #151719ed; color: white; box-shadow: 0 5px 18px #0007; }
+.stage3d-video-controls { position: absolute; z-index: 3; left: 14px; right: 14px; bottom: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 7px; border: 1px solid #ffffff24; border-radius: 9px; background: #151719; color: white; box-shadow: 0 5px 18px #0007; }
 .stage3d-video-controls.controls-open { right: 344px; }
 .stage3d-video-controls button { border: 1px solid #ffffff24; border-radius: 6px; background: #f2ede6; color: #2b2824; padding: 6px 10px; font-size: 12px; font-weight: 900; }
 .stage3d-video-controls button:disabled { opacity: .4; }
@@ -271,9 +275,9 @@ h3 { font-size: 18px; }
 .stage3d-range-field { display: grid; grid-template-columns: 59px 1fr 46px; align-items: center; gap: 6px; min-height: 29px; color: #c9c6c1; font-size: 12px; font-weight: 800; }
 .stage3d-range-field input { min-width: 0; width: 100%; accent-color: var(--accent); }
 .stage3d-range-field b { color: #ffb69e; text-align: right; font-size: 12px; }
-.stage3d-backdrop-type { display: grid; grid-template-columns: 70px 1fr; align-items: center; gap: 7px; margin-bottom: 7px; color: #aaa7a1; font-size: 12px; font-weight: 800; }
-.stage3d-backdrop-type select { min-width: 0; width: 100%; height: 30px; border: 1px solid #ffffff1c; border-radius: 7px; outline: 0; background: #242628; color: #f4f1ec; padding: 4px 7px; font-size: 12px; }
-.stage3d-backdrop-type select:focus { border-color: #de7957; }
+.stage3d-backdrop-type, .stage3d-person-type { display: grid; grid-template-columns: 70px 1fr; align-items: center; gap: 7px; margin-bottom: 7px; color: #aaa7a1; font-size: 12px; font-weight: 800; }
+.stage3d-backdrop-type select, .stage3d-person-type select { min-width: 0; width: 100%; height: 30px; border: 1px solid #ffffff1c; border-radius: 7px; outline: 0; background: #242628; color: #f4f1ec; padding: 4px 7px; font-size: 12px; }
+.stage3d-backdrop-type select:focus, .stage3d-person-type select:focus { border-color: #de7957; }
 .stage3d-backdrop-fields, .stage3d-position-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 7px; }
 .stage3d-backdrop-fields { margin-bottom: 6px; }
 .stage3d-backdrop-fields label, .stage3d-position-fields label { display: grid; grid-template-columns: 50px 1fr; align-items: center; gap: 4px; color: #aaa7a1; font-size: 12px; font-weight: 800; }
@@ -360,8 +364,9 @@ h3 { font-size: 18px; }
   .stage3d-badges { top: 58px; left: 10px; }
   .stage3d-shell.controls-open .stage3d-canvas { right: 0; }
   .stage3d-shell.controls-open .stage3d-presets { right: 10px; }
-  .stage3d-video-controls.controls-open { right: 14px; bottom: 326px; }
+  .stage3d-video-controls.controls-open { right: 14px; bottom: 6px; }
   .stage3d-objects { inset: auto 10px 10px; width: auto; max-height: 300px; border: 1px solid #ffffff1c; border-radius: 11px; }
+  .stage3d-shell.has-video-controls .stage3d-objects { bottom: 72px; max-height: 240px; }
   .stage3d-help { left: 10px; bottom: 326px; }
   .stage3d-help span { display: none; }
   .stage3d-shell.compact { min-height: 0; }
