@@ -28,7 +28,7 @@ const DEFAULT_PEOPLE: Person[] = [
 const FENCE_DEFAULT_COLOR = "#B7BDC3";
 const DEFAULT_BACKDROP: Backdrop = { style: "solid", x: 0, z: 7.36, rotation: 0, count: 1, widthCm: 122, heightCm: 252, gapCm: 0, color: "#765548", visible: true };
 const CAMERA_FOV_50MM = 22.3;
-const TEMPLATE_CAMERA: CameraPose = { fov: CAMERA_FOV_50MM, position: [0, 1.25, -22], target: [0, 3.5, 7] };
+const TEMPLATE_CAMERA: CameraPose = { fov: CAMERA_FOV_50MM, position: [-6.8, 4.2, -18], target: [0, 3.4, 7.2] };
 export type Stage3DHandle = { exportView: () => void; captureView: () => string | null; getCameraPose: () => CameraPose | null };
 type Stage3DProps = {
   image: ProjectionImage | null;
@@ -89,7 +89,7 @@ function cameraKey(image?: ProjectionImage | null) { return `${CAMERA_KEY_PREFIX
 function objectLayoutKey(image?: ProjectionImage | null) { return `${LAYOUT_KEY_PREFIX}${image?.id ?? "default"}` }
 function readCamera(key: string): CameraPose | null {
   try {
-    const raw = localStorage.getItem(key) ?? localStorage.getItem(LEGACY_CAMERA_KEY);
+    const raw = localStorage.getItem(key) ?? (key === cameraKey(null) ? localStorage.getItem(LEGACY_CAMERA_KEY) : null);
     const v = JSON.parse(raw || "null") as Partial<CameraPose> | null;
     return v && typeof v.fov === "number" && validTuple(v.position) && validTuple(v.target) ? { fov: CAMERA_FOV_50MM, position: v.position, target: v.target } : null;
   } catch { return null }
@@ -109,8 +109,9 @@ function normalizeLayout(value: unknown): Layout | null {
   return { version: 6, people, backdrop: clampBackdrop(backdrop) };
 }
 function readLayout(storageKey: string): Layout {
-  try { const stored = localStorage.getItem(storageKey) ?? localStorage.getItem(LAYOUT_KEY), normalized = normalizeLayout(JSON.parse(stored || "null")); if (normalized) return normalized } catch { /* migrate below */ }
+  try { const stored = localStorage.getItem(storageKey) ?? (storageKey === objectLayoutKey(null) ? localStorage.getItem(LAYOUT_KEY) : null), normalized = normalizeLayout(JSON.parse(stored || "null")); if (normalized) return normalized } catch { /* migrate below */ }
   const next = copyDefaults();
+  if (storageKey !== objectLayoutKey(null)) return next;
   try {
     const old = JSON.parse(localStorage.getItem(OLD_KEY) || "null") as Legacy | null;
     if (old) {
@@ -442,6 +443,8 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
   const person = layout.people.find(p => p.id === activePersonId) ?? layout.people[0] ?? null;
   const selectedPeople = selection.kind === "person" ? layout.people.filter(p => selectedPersonIds.includes(p.id)) : [];
   const controlledPeople = selectedPeople.length ? selectedPeople : person ? [person] : [];
+  const anyPersonVisible = layout.people.some(person => person.visible);
+  const toggleAllPeople = () => { const visible = !anyPersonVisible; setLayout(current => ({ ...current, people: current.people.map(person => ({ ...person, visible })) })); showNotice(visible ? "已顯示全部人物。" : "已隱藏全部人物。"); };
 
   return <div className={`stage3d-shell ${compact ? "compact" : ""} ${showObjectControls && !controlsCollapsed ? "controls-open" : ""}`}>
     <div ref={mountRef} className="stage3d-canvas" aria-label="臺中市港區藝術中心 3D 舞台預覽" />
@@ -457,7 +460,7 @@ const Stage3D = forwardRef<Stage3DHandle, Stage3DProps>(function Stage3D({ image
       <section className={`stage3d-control-section person-section ${selection.kind === "person" ? "active" : ""}`} onPointerDown={() => { if (person) { setSelection({ kind: "person", id: person.id }); if (!selectedPersonIds.includes(person.id)) setSelectedPersonIds([person.id]) } }}>
         <div className="stage3d-section-heading">
           <div><strong>人物調整</strong><span>{selectedPeople.length > 1 ? `${selectedPeople.length} 位已選取` : `${layout.people.length} 位人物`}</span></div>
-          <div className="stage3d-title-actions"><button onClick={randomizePeople}>隨機排列</button><button onClick={() => addPerson()}>＋ 新增人物</button></div>
+          <div className="stage3d-title-actions"><button disabled={!layout.people.length} onClick={toggleAllPeople}>{anyPersonVisible ? "全部隱藏" : "全部顯示"}</button><button onClick={randomizePeople}>隨機排列</button><button onClick={() => addPerson()}>＋ 新增人物</button></div>
         </div>
         {person ? <>
           <div className="stage3d-person-picker">

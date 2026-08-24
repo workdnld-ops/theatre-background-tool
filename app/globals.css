@@ -229,7 +229,7 @@ h3 { font-size: 18px; }
 .stage3d-objects button, .stage3d-objects input, .stage3d-objects select { font: inherit; }
 .stage3d-objects-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .stage3d-objects-title > div { min-width: 0; display: grid; gap: 1px; }
-.stage3d-title-actions { display: flex !important; grid-auto-flow: column; gap: 4px !important; }
+.stage3d-title-actions { display: flex !important; flex-wrap: wrap; justify-content: flex-end; grid-auto-flow: column; gap: 4px !important; }
 .stage3d-objects-title strong { font-size: 12px; }
 .stage3d-objects-title span { color: #8f918f; font-size: 12px; }
 .stage3d-objects-title button, .stage3d-object-picker > button { border: 1px solid #ffffff1c; border-radius: 7px; background: #ffffff0c; color: #eeeae4; padding: 6px 8px; font-size: 12px; font-weight: 900; }
